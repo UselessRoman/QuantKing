@@ -1,0 +1,34 @@
+# 核心数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=14.0.0
+
+# qlib 策略引擎（微软量化框架）
+pyqlib>=0.9.0
+
+# backtrader 回测框架
+backtrader>=1.9.76
+matplotlib>=3.7.0
+
+# Web 服务
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+jinja2>=3.1.0
+
+# 机器学习（qlib 可能需要）
+scikit-learn>=1.3.0
+lightgbm>=4.0.0
+
+# 绩效可视化
+quantstats>=0.0.62
+
+# 测试
+pytest>=8.0.0
+httpx>=0.27.0
+
+# YAML 配置
+pyyaml>=6.0
+
+# XTquant 需要手动安装：
+# 从 miniQMT 安装目录的 bin 文件夹下找到 xtquant 包并安装
+# pip install xtquant-xxxxx.whl

@@ -1,0 +1,195 @@
+# -*- coding: utf-8 -*-
+"""
+回测运行器模块
+
+封装 backtrader.Cerebro 的创建、配置和执行流程，
+对外提供简洁的一键运行接口。
+
+使用方式:
+    from backtest.runner import BacktestRunner
+
+    runner = BacktestRunner(initial_capital=100000)
+    runner.load_data_from_db(codes=["000001.SZ"], start_date="20230101", end_date="20231231")
+    runner.set_strategy(MACrossStrategy, fast=5, slow=20)
+    result = runner.run()
+    print(result['performance'])
+"""
+import pandas as pd
+import backtrader as bt
+from datetime import datetime
+from data.database import Database
+from data.backtrader_feeder import load_bt_data
+from backtest.bt_broker import AShareCommission
+from backtest.bt_analyzer import BacktestAnalyzer
+from backtest.bt_strategy import get_strategy
+
+
+class BacktestRunner:
+    """
+    回测执行器
+
+    封装了 backtrader 回测的完整流程:
+        数据加载 → 策略配置 → 回测执行 → 绩效分析
+
+    属性:
+        cerebro:         backtrader.Cerebro 实例
+        initial_capital: 初始资金
+        analyzer:        绩效分析器
+        _db:             数据库连接
+    """
+
+    def __init__(self, initial_capital: float = 100000,
+                 commission_rate: float = 0.00025):
+        """
+        参数:
+            initial_capital: 初始资金
+            commission_rate: 佣金费率
+        """
+        self.initial_capital = initial_capital
+        self.commission_rate = commission_rate
+        self.cerebro = bt.Cerebro()
+        self.analyzer = BacktestAnalyzer()
+        self._db = None
+
+        # 设置默认配置
+        self.cerebro.broker.setcash(initial_capital)
+        self.cerebro.broker.setcommission(commission=commission_rate)
+        self.cerebro.broker.addcommissioninfo(AShareCommission())
+
+        # 添加默认分析器
+        self.cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
+        self.cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe',
+                                 riskfreerate=0.02, annualize=True)
+        self.cerebro.addanalyzer(bt.analyzers.DrawDown, _name='drawdown')
+        self.cerebro.addanalyzer(bt.analyzers.Returns, _name='returns')
+        self.cerebro.addanalyzer(bt.analyzers.VWR, _name='vwr')
+
+    def load_data_from_db(self, codes: list[str], start_date: str = '',
+                           end_date: str = '', period: str = '1d') -> int:
+        """
+        从本地数据库加载K线数据到 cerebro
+
+        参数:
+            codes:      股票代码列表
+            start_date: 起始日期 YYYYMMDD
+            end_date:   结束日期 YYYYMMDD
+            period:     K线周期
+
+        返回:
+            int: 成功加载的股票数量
+        """
+        db = Database()
+        db.connect()
+        self._db = db
+
+        loaded = 0
+        try:
+            for code in codes:
+                df = db.get_daily_kline_df(code, period, start_date, end_date)
+                if df.empty:
+                    print(f"警告: {code} 无数据，跳过")
+                    continue
+
+                data = load_bt_data(df)
+                if data is not None:
+                    # 设置数据名称用于策略中识别
+                    data._name = code
+                    self.cerebro.adddata(data, name=code)
+                    loaded += 1
+        finally:
+            db.close()
+
+        print(f"已加载 {loaded}/{len(codes)} 只股票的K线数据")
+        return loaded
+
+    def load_data_from_df(self, kline_dict: dict[str, pd.DataFrame]) -> int:
+        """
+        从 DataFrame 字典加载K线数据
+
+        参数:
+            kline_dict: {股票代码: K线 DataFrame}
+
+        返回:
+            int: 成功加载的股票数量
+        """
+        loaded = 0
+        for code, df in kline_dict.items():
+            if df.empty:
+                continue
+            data = load_bt_data(df)
+            if data is not None:
+                data._name = code
+                self.cerebro.adddata(data, name=code)
+                loaded += 1
+        print(f"已加载 {loaded}/{len(kline_dict)} 只股票的数据")
+        return loaded
+
+    def set_strategy(self, strategy_cls_or_name, **params):
+        """
+        设置回测策略
+
+        参数:
+            strategy_cls_or_name: 策略类 或 策略名称字符串
+            **params:             策略参数
+        """
+        if isinstance(strategy_cls_or_name, str):
+            strategy_cls = get_strategy(strategy_cls_or_name)
+        else:
+            strategy_cls = strategy_cls_or_name
+
+        self.cerebro.addstrategy(strategy_cls, **params)
+        print(f"已设置策略: {strategy_cls.__name__}")
+
+    def run(self) -> dict:
+        """
+        执行回测并返回完整结果
+
+        返回:
+            dict: 包含以下字段:
+                - performance:   绩效指标
+                - initial_capital: 初始资金
+                - final_value:   最终资产
+                - timestamp:     执行时间
+        """
+        print(f"开始回测... 初始资金: {self.initial_capital:,.0f} 元")
+
+        start_value = self.cerebro.broker.getvalue()
+        results = self.cerebro.run()
+        end_value = self.cerebro.broker.getvalue()
+
+        performance = self.analyzer.analyze(self.cerebro, self.initial_capital)
+
+        # 补充最终资产信息
+        performance['final_value'] = round(end_value, 2)
+        performance['initial_capital'] = self.initial_capital
+
+        return {
+            'performance': performance,
+            'initial_capital': self.initial_capital,
+            'final_value': round(end_value, 2),
+            'total_return_pct': round((end_value / start_value - 1) * 100, 2),
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        }
+
+    def run_quick(self, codes: list[str], strategy_name: str,
+                  start_date: str = '', end_date: str = '',
+                  **params) -> dict:
+        """
+        快速回测：一键加载数据、设置策略、运行、分析
+
+        参数:
+            codes:         股票代码列表
+            strategy_name: 策略名称（如 'ma_cross'）
+            start_date:    起始日期
+            end_date:      结束日期
+            **params:      策略参数
+
+        返回:
+            dict: 回测结果
+        """
+        loaded = self.load_data_from_db(codes, start_date, end_date)
+        if loaded == 0:
+            return {'error': '未加载到任何K线数据'}
+
+        self.set_strategy(strategy_name, **params)
+        return self.run()

@@ -1,0 +1,1385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QuantKing · 量化交易平台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* ============================================================
+     QUANTKING — CSS Design System
+     ============================================================ */
+  :root {
+    /* 颜色系统 */
+    --bg-deep:        #06090f;
+    --bg-primary:     #0a0f18;
+    --bg-secondary:   #0f1622;
+    --bg-card:        #111827;
+    --bg-card-hover:  #161e2e;
+    --bg-elevated:    #1a2332;
+    --border-subtle:  #1e293b;
+    --border-default: #263348;
+    --border-accent:  #334155;
+    --text-primary:   #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted:     #64748b;
+    --accent-blue:    #3b82f6;
+    --accent-cyan:    #06b6d4;
+    --accent-purple:  #8b5cf6;
+    --accent-violet:  #a855f7;
+    --positive:       #10b981;
+    --negative:       #ef4444;
+    --warning:        #f59e0b;
+    --positive-bg:    rgba(16, 185, 129, 0.10);
+    --negative-bg:    rgba(239, 68, 68, 0.10);
+    --warning-bg:     rgba(245, 158, 11, 0.10);
+    /* 渐变 */
+    --gradient-primary:  linear-gradient(135deg, #3b82f6, #8b5cf6);
+    --gradient-glow:     linear-gradient(135deg, rgba(59,130,246,.25), rgba(139,92,246,.25));
+    --gradient-card:     linear-gradient(180deg, rgba(59,130,246,.04) 0%, transparent 100%);
+    --gradient-nav:      linear-gradient(180deg, rgba(15,22,34,1) 0%, rgba(10,15,24,.97) 100%);
+    /* 阴影 */
+    --shadow-sm:     0 1px 2px rgba(0,0,0,.4);
+    --shadow-md:     0 4px 12px rgba(0,0,0,.35), 0 0 1px rgba(59,130,246,.08);
+    --shadow-lg:     0 8px 30px rgba(0,0,0,.5), 0 0 2px rgba(139,92,246,.1);
+    --shadow-glow:   0 0 20px rgba(59,130,246,.12), 0 0 60px rgba(139,92,246,.06);
+    /* 圆角 */
+    --radius-sm:     6px;
+    --radius-md:     10px;
+    --radius-lg:     16px;
+    --radius-xl:     24px;
+    /* 动画 */
+    --ease-out:      cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-spring:   cubic-bezier(0.34, 1.56, 0.64, 1);
+    --transition:    0.25s var(--ease-out);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', 'Microsoft YaHei', -apple-system, sans-serif;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    min-height: 100vh;
+    line-height: 1.6;
+    letter-spacing: -0.01em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* 背景氛围 */
+  body::before {
+    content: '';
+    position: fixed;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background:
+      radial-gradient(ellipse at 25% 15%, rgba(59,130,246,.06) 0%, transparent 50%),
+      radial-gradient(ellipse at 75% 15%, rgba(139,92,246,.05) 0%, transparent 50%),
+      radial-gradient(ellipse at 50% 80%, rgba(6,182,212,.03) 0%, transparent 40%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ============================================
+     顶部导航栏
+     ============================================ */
+  .navbar {
+    background: var(--gradient-nav);
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 0 28px;
+    display: flex;
+    align-items: center;
+    height: 60px;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+
+  .navbar .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 18px;
+    font-weight: 800;
+    background: var(--gradient-primary);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-right: 44px;
+    letter-spacing: -0.02em;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .navbar .logo-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px; height: 32px;
+    background: var(--gradient-primary);
+    border-radius: var(--radius-sm);
+    font-size: 16px;
+    color: #fff;
+    -webkit-text-fill-color: #fff;
+    box-shadow: var(--shadow-glow);
+  }
+
+  .nav-links {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .navbar a {
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 13.5px;
+    font-weight: 500;
+    padding: 6px 16px;
+    border-radius: var(--radius-sm);
+    transition: all var(--transition);
+    position: relative;
+    letter-spacing: -0.01em;
+  }
+  .navbar a:hover {
+    color: var(--text-primary);
+    background: rgba(59,130,246,.08);
+  }
+  .navbar a.active {
+    color: #fff;
+    background: rgba(59,130,246,.14);
+    box-shadow: 0 0 0 1px rgba(59,130,246,.2);
+  }
+  .navbar a.active::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 20px;
+    height: 3px;
+    background: var(--accent-blue);
+    border-radius: 3px 3px 0 0;
+    box-shadow: 0 0 8px rgba(59,130,246,.6);
+  }
+
+  .nav-status {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .nav-dot {
+    width: 8px; height: 8px;
+    background: var(--positive);
+    border-radius: 50%;
+    box-shadow: 0 0 8px rgba(16,185,129,.6);
+    animation: pulse-dot 2s infinite;
+  }
+  @keyframes pulse-dot {
+    0%,100% { box-shadow: 0 0 4px rgba(16,185,129,.4); }
+    50%     { box-shadow: 0 0 14px rgba(16,185,129,.8); }
+  }
+  .nav-time {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
+  /* ============================================
+     主内容区
+     ============================================ */
+  .main-container {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 32px 28px 60px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* 页面标题 */
+  .page-title {
+    font-size: 26px;
+    font-weight: 700;
+    margin-bottom: 28px;
+    color: var(--text-primary);
+    letter-spacing: -0.03em;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .page-title::before {
+    content: '';
+    width: 4px; height: 28px;
+    background: var(--gradient-primary);
+    border-radius: 4px;
+  }
+  .page-subtitle {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-top: 2px;
+  }
+
+  /* ============================================
+     卡片网格
+     ============================================ */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 18px;
+    margin-bottom: 24px;
+  }
+  .card-grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+  .card-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .card-grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
+
+  /* 统计卡片 */
+  .stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    padding: 22px 24px;
+    position: relative;
+    overflow: hidden;
+    transition: all var(--transition);
+    cursor: default;
+  }
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: var(--gradient-primary);
+    opacity: 0;
+    transition: opacity var(--transition);
+  }
+  .stat-card:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--border-default);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+  }
+  .stat-card:hover::before {
+    opacity: 1;
+  }
+  .stat-card .stat-icon {
+    font-size: 22px;
+    margin-bottom: 12px;
+    opacity: 0.9;
+  }
+  .stat-card .stat-label {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+  .stat-card .stat-value {
+    font-size: 30px;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--text-primary), #cbd5e1);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: -0.03em;
+    font-family: 'JetBrains Mono', 'Inter', monospace;
+  }
+  .stat-card .stat-sub {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    margin-top: 6px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .stat-card.accent-blue  { border-left: 3px solid var(--accent-blue); }
+  .stat-card.accent-cyan  { border-left: 3px solid var(--accent-cyan); }
+  .stat-card.accent-purple{ border-left: 3px solid var(--accent-purple); }
+  .stat-card.accent-green { border-left: 3px solid var(--positive); }
+
+  /* 迷你进度条 */
+  .mini-progress {
+    margin-top: 10px;
+    height: 4px;
+    background: var(--border-subtle);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .mini-progress .fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.8s var(--ease-spring);
+  }
+  .fill-blue   { background: var(--gradient-primary); }
+  .fill-green  { background: linear-gradient(90deg, var(--positive), #34d399); }
+  .fill-orange { background: linear-gradient(90deg, var(--warning), #fbbf24); }
+  .fill-red    { background: linear-gradient(90deg, var(--negative), #f87171); }
+
+  /* ============================================
+     面板
+     ============================================ */
+  .panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    margin-bottom: 20px;
+    transition: border-color var(--transition);
+  }
+  .panel:hover {
+    border-color: var(--border-default);
+  }
+  .panel-header {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 18px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    letter-spacing: -0.01em;
+  }
+  .panel-header .header-icon {
+    margin-right: 8px;
+    opacity: 0.8;
+  }
+
+  /* ============================================
+     表格
+     ============================================ */
+  .table-wrap {
+    overflow-x: auto;
+    border-radius: var(--radius-sm);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th {
+    text-align: left;
+    padding: 12px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border-bottom: 2px solid var(--border-subtle);
+    background: rgba(15,23,42,.4);
+    white-space: nowrap;
+  }
+  td {
+    padding: 12px 14px;
+    font-size: 13px;
+    border-bottom: 1px solid rgba(30,41,59,.6);
+    font-variant-numeric: tabular-nums;
+    font-family: 'JetBrains Mono', 'Inter', monospace;
+    font-weight: 500;
+  }
+  tr {
+    transition: background var(--transition);
+  }
+  tr:hover td {
+    background: rgba(59,130,246,.04);
+  }
+
+  .positive { color: var(--positive); }
+  .negative { color: var(--negative); }
+
+  /* 徽章 */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 12px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    font-family: 'Inter', sans-serif;
+  }
+  .badge-success { background: var(--positive-bg); color: var(--positive); }
+  .badge-danger  { background: var(--negative-bg); color: var(--negative); }
+  .badge-warning { background: var(--warning-bg); color: var(--warning); }
+  .badge-info    { background: rgba(59,130,246,.10); color: var(--accent-blue); }
+
+  /* ============================================
+     按钮
+     ============================================ */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 22px;
+    border: none;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: 'Inter', sans-serif;
+    letter-spacing: -0.01em;
+    transition: all var(--transition);
+    white-space: nowrap;
+    position: relative;
+    overflow: hidden;
+  }
+  .btn-primary {
+    background: var(--gradient-primary);
+    color: #fff;
+    box-shadow: 0 2px 10px rgba(59,130,246,.25);
+  }
+  .btn-primary:hover {
+    box-shadow: 0 4px 20px rgba(59,130,246,.4);
+    transform: translateY(-1px);
+  }
+  .btn-primary:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 5px rgba(59,130,246,.2);
+  }
+  .btn-outline {
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-default);
+  }
+  .btn-outline:hover {
+    color: var(--text-primary);
+    border-color: var(--accent-blue);
+    background: rgba(59,130,246,.06);
+  }
+  .btn-sm { padding: 5px 14px; font-size: 12px; border-radius: 5px; }
+  .btn-xs  { padding: 3px 10px; font-size: 11px; border-radius: 4px; }
+
+  /* ============================================
+     表单
+     ============================================ */
+  .form-group {
+    margin-bottom: 14px;
+  }
+  .form-group label {
+    display: block;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 5px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .form-group input,
+  .form-group select,
+  .form-group textarea {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 13.5px;
+    font-family: 'JetBrains Mono', 'Inter', monospace;
+    transition: all var(--transition);
+    outline: none;
+  }
+  .form-group input:focus,
+  .form-group select:focus,
+  .form-group textarea:focus {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 3px rgba(59,130,246,.12);
+  }
+  .form-group select {
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'%3E%3C/path%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 36px;
+  }
+  .form-row {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .form-row > * { flex: 1; min-width: 140px; }
+
+  /* ============================================
+     页面区域
+     ============================================ */
+  .page-section {
+    display: none;
+    animation: fadeSlideIn 0.4s var(--ease-out);
+  }
+  .page-section.active {
+    display: block;
+  }
+  @keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ============================================
+     加载状态
+     ============================================ */
+  .loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    gap: 8px;
+  }
+  .loading-dots {
+    display: flex;
+    gap: 6px;
+  }
+  .loading-dots span {
+    width: 8px; height: 8px;
+    background: var(--accent-blue);
+    border-radius: 50%;
+    animation: loadingBounce 1.4s infinite ease-in-out both;
+  }
+  .loading-dots span:nth-child(1) { animation-delay: -0.32s; background: var(--accent-blue); }
+  .loading-dots span:nth-child(2) { animation-delay: -0.16s; background: var(--accent-purple); }
+  .loading-dots span:nth-child(3) { animation-delay: 0;      background: var(--accent-cyan); }
+  @keyframes loadingBounce {
+    0%,80%,100% { transform: scale(0.6); opacity: .3; }
+    40%         { transform: scale(1.2); opacity: 1; }
+  }
+
+  /* 骨架屏 */
+  .skeleton {
+    background: linear-gradient(90deg, var(--bg-card) 25%, var(--bg-elevated) 50%, var(--bg-card) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: var(--radius-sm);
+  }
+  @keyframes shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  .skeleton-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 12px;
+  }
+  .skeleton-cell { height: 20px; border-radius: 4px; }
+  .skeleton-cell.w-1 { width: 25%; }
+  .skeleton-cell.w-2 { width: 40%; }
+  .skeleton-cell.w-3 { width: 60%; }
+  .skeleton-cell.w-4 { width: 80%; }
+
+  /* ============================================
+     迷你图表模拟
+     ============================================ */
+  .sparkline {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 40px;
+    margin-top: 8px;
+  }
+  .sparkline .bar {
+    flex: 1;
+    background: var(--gradient-primary);
+    border-radius: 2px 2px 0 0;
+    transition: height 0.6s var(--ease-spring);
+    opacity: 0.8;
+    min-width: 4px;
+  }
+  .sparkline .bar:nth-child(odd) { opacity: 0.55; }
+
+  /* ============================================
+     滚动条
+     ============================================ */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-accent); }
+
+  /* ============================================
+     响应式
+     ============================================ */
+  @media (max-width: 1024px) {
+    .card-grid.cols-2,
+    .card-grid.cols-3,
+    .card-grid.cols-4 { grid-template-columns: repeat(2, 1fr); }
+    .card-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  }
+  @media (max-width: 768px) {
+    .navbar { padding: 0 16px; overflow-x: auto; }
+    .navbar .logo { margin-right: 20px; font-size: 15px; }
+    .navbar a { font-size: 12px; padding: 5px 10px; }
+    .navbar a.active::after { display: none; }
+    .nav-status { display: none; }
+    .main-container { padding: 20px 14px 40px; }
+    .card-grid.cols-2,
+    .card-grid.cols-3,
+    .card-grid.cols-4 { grid-template-columns: 1fr; }
+    .card-grid { grid-template-columns: 1fr; }
+    .form-row > * { flex: 1 1 100%; min-width: 100%; }
+    .stat-card .stat-value { font-size: 24px; }
+    .page-title { font-size: 20px; }
+    .panel { padding: 16px; }
+  }
+  @media (max-width: 480px) {
+    .navbar { height: 48px; gap: 0; }
+    .navbar .logo { font-size: 13px; margin-right: 8px; }
+    .navbar a { font-size: 11px; padding: 4px 6px; }
+    .btn { padding: 7px 14px; font-size: 12px; }
+  }
+
+  /* ============================================
+     特殊效果
+     ============================================ */
+  /* 光晕边框 */
+  .glow-border {
+    position: relative;
+  }
+  .glow-border::after {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, rgba(59,130,246,.3), transparent, rgba(139,92,246,.3));
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  /* 通知Toast */
+  .toast {
+    position: fixed;
+    top: 80px;
+    right: 24px;
+    padding: 14px 22px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    z-index: 9999;
+    font-size: 13px;
+    font-weight: 500;
+    animation: toastIn 0.35s var(--ease-spring);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 380px;
+  }
+  .toast.success { border-left: 3px solid var(--positive); }
+  .toast.error   { border-left: 3px solid var(--negative); }
+  .toast.info    { border-left: 3px solid var(--accent-blue); }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateX(40px) scale(0.95); }
+    to   { opacity: 1; transform: translateX(0) scale(1); }
+  }
+
+  /* 数值变化闪烁 */
+  .value-updated {
+    animation: valueFlash 0.6s var(--ease-out);
+  }
+  @keyframes valueFlash {
+    0%   { filter: brightness(1.5); }
+    100% { filter: brightness(1); }
+  }
+</style>
+</head>
+<body>
+
+<!-- =============================================
+     导航栏
+     ============================================= -->
+<nav class="navbar">
+  <div class="logo">
+    <span class="logo-icon">◈</span>QuantKing
+  </div>
+  <div class="nav-links">
+    <a href="#" onclick="showPage('dashboard')" class="active" data-nav="dashboard">仪表盘</a>
+    <a href="#" onclick="showPage('data')" data-nav="data">数据管理</a>
+    <a href="#" onclick="showPage('backtest')" data-nav="backtest">策略回测</a>
+    <a href="#" onclick="showPage('strategy')" data-nav="strategy">因子策略</a>
+    <a href="#" onclick="showPage('monitor')" data-nav="monitor">交易监控</a>
+    <a href="#" onclick="showPage('risk')" data-nav="risk">风险控制</a>
+  </div>
+  <div class="nav-status">
+    <div class="nav-dot" title="系统运行中"></div>
+    <span class="nav-time" id="nav-time">--</span>
+  </div>
+</nav>
+
+<div class="main-container">
+
+<!-- =============================================
+     仪表盘
+     ============================================= -->
+<div id="page-dashboard" class="page-section active">
+  <div class="page-title">仪表盘</div>
+  <div class="card-grid cols-4" id="dashboard-stats">
+    <div class="stat-card accent-blue">
+      <div class="stat-icon">💰</div>
+      <div class="stat-label">总资产</div>
+      <div class="stat-value" id="stat-asset">--</div>
+      <div class="stat-sub">加载中...</div>
+    </div>
+    <div class="stat-card accent-cyan">
+      <div class="stat-icon">📊</div>
+      <div class="stat-label">持仓数量</div>
+      <div class="stat-value" id="stat-positions">--</div>
+      <div class="mini-progress"><div class="fill fill-blue" style="width:0%" id="positions-bar"></div></div>
+    </div>
+    <div class="stat-card accent-purple">
+      <div class="stat-icon">📈</div>
+      <div class="stat-label">未实现盈亏</div>
+      <div class="stat-value" id="stat-pnl">--</div>
+      <div class="stat-sub" id="stat-pnl-sub"></div>
+    </div>
+    <div class="stat-card accent-green">
+      <div class="stat-icon">🗄️</div>
+      <div class="stat-label">数据库状态</div>
+      <div class="stat-value" id="stat-db">--</div>
+      <div class="stat-sub">条K线数据</div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header"><span>📡 系统状态</span></div>
+    <div id="system-status">
+      <div class="loading"><div class="loading-dots"><span></span><span></span><span></span></div></div>
+    </div>
+  </div>
+  <!-- 模拟K线迷你图 -->
+  <div class="panel">
+    <div class="panel-header"><span>📉 市场脉动</span><span style="font-size:11px;color:var(--text-muted)">模拟参考</span></div>
+    <div class="sparkline" id="market-sparkline"></div>
+  </div>
+</div>
+
+<!-- =============================================
+     数据管理
+     ============================================= -->
+<div id="page-data" class="page-section">
+  <div class="page-title">数据管理</div>
+  <div class="panel">
+    <div class="panel-header">
+      <span>🗄️ 数据库概览</span>
+      <span class="badge badge-success" id="db-status-tag">就绪</span>
+    </div>
+    <div class="card-grid cols-4">
+      <div class="stat-card accent-blue">
+        <div class="stat-icon">🏢</div>
+        <div class="stat-label">股票数量</div>
+        <div class="stat-value" id="db-stocks">--</div>
+      </div>
+      <div class="stat-card accent-cyan">
+        <div class="stat-icon">📊</div>
+        <div class="stat-label">K线数据量</div>
+        <div class="stat-value" id="db-kline">--</div>
+      </div>
+      <div class="stat-card accent-purple">
+        <div class="stat-icon">📁</div>
+        <div class="stat-label">板块数量</div>
+        <div class="stat-value" id="db-sectors">--</div>
+      </div>
+      <div class="stat-card accent-green">
+        <div class="stat-icon">📝</div>
+        <div class="stat-label">交易记录</div>
+        <div class="stat-value" id="db-trades">--</div>
+      </div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">
+      <span>⚡ 数据操作</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary btn-sm" onclick="syncStocks()">🔄 同步股票信息</button>
+        <button class="btn btn-primary btn-sm" onclick="downloadKline()">⬇ 下载K线</button>
+        <button class="btn btn-outline btn-sm" onclick="updateKline()">📡 增量更新</button>
+      </div>
+    </div>
+    <div id="data-op-result"></div>
+  </div>
+  <div class="panel">
+    <div class="panel-header"><span>🔍 K线查询</span></div>
+    <div class="form-row">
+      <div class="form-group"><label>股票代码</label><input type="text" id="kline-code" placeholder="000001.SZ"></div>
+      <div class="form-group"><label>起始日期</label><input type="text" id="kline-start" placeholder="20230101"></div>
+      <div class="form-group"><label>结束日期</label><input type="text" id="kline-end" placeholder="20231231"></div>
+      <div class="form-group" style="display:flex;align-items:flex-end"><button class="btn btn-primary" onclick="queryKline()">🔍 查询</button></div>
+    </div>
+    <div id="kline-result"></div>
+  </div>
+</div>
+
+<!-- =============================================
+     策略回测
+     ============================================= -->
+<div id="page-backtest" class="page-section">
+  <div class="page-title">策略回测</div>
+  <div class="panel">
+    <div class="panel-header"><span>⚙️ 回测参数</span></div>
+    <div class="form-row">
+      <div class="form-group"><label>策略</label><select id="bt-strategy"><option value="ma_cross">均线交叉</option><option value="macd">MACD</option><option value="rsi">RSI</option><option value="bollinger_bands">布林带</option><option value="turtle">海龟交易</option></select></div>
+      <div class="form-group"><label>股票代码</label><input type="text" id="bt-codes" value="000001.SZ" placeholder="多个用逗号分隔"></div>
+      <div class="form-group"><label>起始日期</label><input type="text" id="bt-start" value="20230101"></div>
+      <div class="form-group"><label>结束日期</label><input type="text" id="bt-end" value="20231231"></div>
+      <div class="form-group"><label>初始资金</label><input type="number" id="bt-capital" value="100000"></div>
+    </div>
+    <button class="btn btn-primary" onclick="runBacktest()" style="margin-top:8px">🚀 运行回测</button>
+  </div>
+  <div id="backtest-result"></div>
+  <div class="panel" style="margin-top:20px">
+    <div class="panel-header"><span>📜 回测历史</span></div>
+    <div id="backtest-history">点击"运行回测"后此处显示历史记录</div>
+  </div>
+</div>
+
+<!-- =============================================
+     因子策略
+     ============================================= -->
+<div id="page-strategy" class="page-section">
+  <div class="page-title">因子策略</div>
+  <div class="panel">
+    <div class="panel-header"><span>🧬 因子列表</span></div>
+    <div id="factor-list">
+      <div class="loading"><div class="loading-dots"><span></span><span></span><span></span></div></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">
+      <span>🤖 模型训练</span>
+      <button class="btn btn-primary btn-sm" onclick="trainModel()">🧠 开始训练</button>
+    </div>
+    <div id="train-result"></div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">
+      <span>📡 选股信号</span>
+      <button class="btn btn-outline btn-sm" onclick="getSignals()">📊 获取信号</button>
+    </div>
+    <div id="signals-result"></div>
+  </div>
+</div>
+
+<!-- =============================================
+     交易监控
+     ============================================= -->
+<div id="page-monitor" class="page-section">
+  <div class="page-title">交易监控</div>
+  <div class="panel">
+    <div class="panel-header">
+      <span>💼 持仓明细</span>
+      <button class="btn btn-outline btn-sm" onclick="refreshPositions()">🔄 刷新</button>
+    </div>
+    <div id="positions-table">
+      <div class="loading"><div class="loading-dots"><span></span><span></span><span></span></div></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">
+      <span>📋 当日委托</span>
+      <button class="btn btn-outline btn-sm" onclick="refreshOrders()">🔄 刷新</button>
+    </div>
+    <div id="orders-table">
+      <div class="loading"><div class="loading-dots"><span></span><span></span><span></span></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- =============================================
+     风险控制
+     ============================================= -->
+<div id="page-risk" class="page-section">
+  <div class="page-title">风险控制</div>
+  <div class="card-grid cols-2" id="risk-overview">
+    <div class="stat-card accent-blue">
+      <div class="stat-icon">🛡️</div>
+      <div class="stat-label">熔断状态</div>
+      <div class="stat-value" id="risk-melt-status" style="font-size:20px">--</div>
+    </div>
+    <div class="stat-card accent-purple">
+      <div class="stat-icon">💹</div>
+      <div class="stat-label">当日盈亏</div>
+      <div class="stat-value" id="risk-daily-pnl" style="font-size:20px">--</div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">
+      <span>📊 风控状态</span>
+      <button class="btn btn-outline btn-sm" onclick="refreshRisk()">🔄 刷新</button>
+    </div>
+    <div id="risk-status">
+      <div class="loading"><div class="loading-dots"><span></span><span></span><span></span></div></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-header"><span>⚙️ 风控配置</span></div>
+    <div id="risk-config">
+      <div class="loading"><div class="loading-dots"><span></span><span></span><span></span></div></div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<script>
+// ============================================================
+// 工具函数
+// ============================================================
+const API = '/api';
+
+async function api(url, opts = {}) {
+  try {
+    const res = await fetch(API + url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    return await res.json();
+  } catch (e) {
+    return { status: 'error', message: '网络请求失败: ' + e.message };
+  }
+}
+
+function formatNum(n) {
+  if (n == null) return '--';
+  return Number(n).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function formatPct(n) {
+  if (n == null) return '--';
+  return (Number(n) * 100).toFixed(2) + '%';
+}
+
+// Toast通知
+function toast(msg, type = 'info') {
+  const t = document.createElement('div');
+  t.className = 'toast ' + type;
+  t.innerHTML = '<span>' + msg + '</span>';
+  document.body.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateX(40px)'; t.style.transition = 'all 0.3s ease'; }, 2800);
+  setTimeout(() => t.remove(), 3200);
+}
+
+// 数值动画
+function animateValue(el, from, to, duration = 600, prefix = '', suffix = '') {
+  const start = performance.now();
+  const isNum = typeof to === 'number';
+  function update(now) {
+    const elapsed = now - start;
+    const progress = Math.min(elapsed / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3); // easeOutCubic
+    if (isNum) {
+      const current = from + (to - from) * eased;
+      el.textContent = prefix + (el.classList.contains('pct') ? (current * 100).toFixed(2) + '%' : current.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })) + suffix;
+    }
+    if (progress < 1) requestAnimationFrame(update);
+  }
+  requestAnimationFrame(update);
+}
+
+// 骨架屏
+function showSkeleton(container, rows = 3, cols = 4) {
+  let html = '';
+  for (let i = 0; i < rows; i++) {
+    html += '<div class="skeleton-row">';
+    for (let j = 0; j < cols; j++) {
+      html += '<div class="skeleton skeleton-cell w-' + ((j % 4) + 1) + '"></div>';
+    }
+    html += '</div>';
+  }
+  container.innerHTML = html;
+}
+
+// 更新时间
+function updateTime() {
+  const now = new Date();
+  document.getElementById('nav-time').textContent =
+    now.toLocaleTimeString('zh-CN', { hour12: false }) + ' · ' +
+    now.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+}
+updateTime();
+setInterval(updateTime, 10000);
+
+// 生成模拟K线迷你图
+function generateSparkline(container, count = 50) {
+  const vals = [];
+  let v = 40 + Math.random() * 20;
+  for (let i = 0; i < count; i++) {
+    v += (Math.random() - 0.48) * 4;
+    v = Math.max(10, Math.min(90, v));
+    vals.push(v);
+  }
+  const max = Math.max(...vals);
+  container.innerHTML = vals.map(v => {
+    const h = (v / max) * 100;
+    return '<div class="bar" style="height:' + h + '%"></div>';
+  }).join('');
+}
+
+// ============================================================
+// 页面切换
+// ============================================================
+function showPage(name) {
+  document.querySelectorAll('.page-section').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.navbar a').forEach(a => a.classList.remove('active'));
+  const page = document.getElementById('page-' + name);
+  if (page) page.classList.add('active');
+  const nav = document.querySelector('[data-nav="' + name + '"]');
+  if (nav) nav.classList.add('active');
+
+  // 触发对应页面加载
+  switch (name) {
+    case 'dashboard': loadDashboard(); break;
+    case 'data':      loadDataStatus(); break;
+    case 'monitor':   refreshPositions(); refreshOrders(); break;
+    case 'risk':      refreshRisk(); loadRiskConfig(); break;
+    case 'strategy':  loadFactors(); break;
+    case 'backtest':  break; // 回测无自动加载
+  }
+}
+
+// ============================================================
+// 仪表盘
+// ============================================================
+async function loadDashboard() {
+  generateSparkline(document.getElementById('market-sparkline'), 60);
+
+  const data = await api('/monitor/dashboard');
+  if (data.data) {
+    const d = data.data;
+    // 总资产
+    document.getElementById('stat-asset').innerHTML =
+      '<span style="font-size:26px">¥</span>' + formatNum(d.asset?.total_asset);
+    // 持仓
+    document.getElementById('stat-positions').textContent = d.positions_count || 0;
+    const bar = document.getElementById('positions-bar');
+    bar.style.width = Math.min((d.positions_count || 0) / 20 * 100, 100) + '%';
+    // 盈亏
+    const pnl = d.unrealized_pnl;
+    const pnlEl = document.getElementById('stat-pnl');
+    pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'positive' : 'negative');
+    pnlEl.innerHTML = (pnl >= 0 ? '+' : '') + '¥' + formatNum(pnl);
+    // DB
+    document.getElementById('stat-db').textContent = (d.db_stats?.kline_rows || 0).toLocaleString('zh-CN');
+    // 系统状态
+    const conn = d.connected;
+    document.getElementById('system-status').innerHTML = `
+      <div style="display:flex;gap:32px;flex-wrap:wrap;align-items:center">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="color:var(--text-muted)">交易账号</span>
+          <span class="badge ${conn ? 'badge-success' : 'badge-danger'}">${conn ? '● 已连接' : '● 未连接'}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="color:var(--text-muted)">股票数量</span>
+          <span style="font-weight:600;color:var(--text-primary);font-family:'JetBrains Mono',monospace">${d.db_stats?.stocks || 0}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="color:var(--text-muted)">K线数据</span>
+          <span style="font-weight:600;color:var(--text-primary);font-family:'JetBrains Mono',monospace">${(d.db_stats?.kline_rows || 0).toLocaleString('zh-CN')}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="color:var(--text-muted)">板块</span>
+          <span style="font-weight:600;color:var(--text-primary);font-family:'JetBrains Mono',monospace">${d.db_stats?.sectors || 0}</span>
+        </div>
+      </div>`;
+  }
+}
+
+// ============================================================
+// 数据管理
+// ============================================================
+async function loadDataStatus() {
+  const data = await api('/data/db-status');
+  if (data.data) {
+    document.getElementById('db-stocks').textContent = data.data.stock_count || 0;
+    document.getElementById('db-kline').textContent = (data.data.kline_count || 0).toLocaleString('zh-CN');
+    document.getElementById('db-sectors').textContent = data.data.sector_count || 0;
+    document.getElementById('db-trades').textContent = data.data.trade_count || 0;
+  }
+}
+
+async function syncStocks() {
+  const r = document.getElementById('data-op-result');
+  r.innerHTML = '<div class="loading"><div class="loading-dots"><span></span><span></span><span></span></div></div><span style="color:var(--text-muted);font-size:13px">同步中...</span>';
+  const data = await api('/data/stocks/sync', { method: 'POST' });
+  r.innerHTML = '<p class="' + (data.status === 'ok' ? 'positive' : 'negative') + '" style="font-size:13px;margin-top:4px">' + (data.status === 'ok' ? '✅ ' : '❌ ') + data.message + '</p>';
+  loadDataStatus();
+  if (data.status === 'ok') toast('股票信息同步完成', 'success');
+}
+
+async function downloadKline() {
+  const r = document.getElementById('data-op-result');
+  r.innerHTML = '<div class="loading"><div class="loading-dots"><span></span><span></span><span></span></div></div><span style="color:var(--text-muted);font-size:13px">下载K线中，请耐心等待...</span>';
+  const data = await api('/data/kline/download', { method: 'POST', body: JSON.stringify({ period: '1d' }) });
+  r.innerHTML = '<p class="' + (data.status === 'ok' ? 'positive' : 'negative') + '" style="font-size:13px;margin-top:4px">' + (data.status === 'ok' ? '✅ ' : '❌ ') + data.message + '</p>';
+  loadDataStatus();
+}
+
+async function updateKline() {
+  const r = document.getElementById('data-op-result');
+  r.innerHTML = '<div class="loading"><div class="loading-dots"><span></span><span></span><span></span></div></div><span style="color:var(--text-muted);font-size:13px">增量更新中...</span>';
+  const data = await api('/data/kline/update', { method: 'POST', body: JSON.stringify({ period: '1d' }) });
+  r.innerHTML = '<p class="' + (data.status === 'ok' ? 'positive' : 'negative') + '" style="font-size:13px;margin-top:4px">' + (data.status === 'ok' ? '✅ ' : '❌ ') + data.message + '</p>';
+  loadDataStatus();
+}
+
+async function queryKline() {
+  const code = document.getElementById('kline-code').value;
+  const start = document.getElementById('kline-start').value;
+  const end = document.getElementById('kline-end').value;
+  const r = document.getElementById('kline-result');
+  r.innerHTML = '<div class="loading"><div class="loading-dots"><span></span><span></span><span></span></div></div>';
+  const data = await api('/data/kline?code=' + code + '&start=' + start + '&end=' + end);
+  if (data.data) {
+    r.innerHTML = '<p style="font-size:13px;color:var(--text-secondary);margin:12px 0 8px">共 <strong style="color:var(--text-primary);font-family:JetBrains Mono,monospace">' + data.count + '</strong> 条记录</p>' +
+      '<pre style="font-size:11px;max-height:320px;overflow:auto;background:var(--bg-primary);padding:14px;border-radius:var(--radius-sm);border:1px solid var(--border-subtle);color:var(--text-secondary)">' + JSON.stringify(data.data.slice(-10), null, 2) + '</pre>';
+  } else {
+    r.innerHTML = '<p style="font-size:13px;color:var(--negative);margin-top:12px">❌ ' + (data.message || '查询失败') + '</p>';
+  }
+}
+
+// ============================================================
+// 回测
+// ============================================================
+async function runBacktest() {
+  const r = document.getElementById('backtest-result');
+  r.innerHTML = '<div class="loading"><div class="loading-dots"><span></span><span></span><span></span></div></div><span style="color:var(--text-muted);font-size:13px">回测运行中...</span>';
+  const data = await api('/backtest/run_quick', {
+    method: 'POST',
+    body: JSON.stringify({
+      strategy_name: document.getElementById('bt-strategy').value,
+      stock_codes: document.getElementById('bt-codes').value.split(',').map(s => s.trim()),
+      start_date: document.getElementById('bt-start').value,
+      end_date: document.getElementById('bt-end').value,
+      initial_capital: parseFloat(document.getElementById('bt-capital').value) || 100000,
+    })
+  });
+  if (data.status === 'ok' && data.data?.performance) {
+    const p = data.data.performance;
+    r.innerHTML = `
+      <div class="card-grid cols-3" style="margin-top:20px">
+        <div class="stat-card accent-blue">
+          <div class="stat-label">总收益率</div>
+          <div class="stat-value ${p.total_return >= 0 ? 'positive' : 'negative'}">${formatPct(p.total_return)}</div>
+        </div>
+        <div class="stat-card accent-cyan">
+          <div class="stat-label">年化收益率</div>
+          <div class="stat-value ${p.annual_return >= 0 ? 'positive' : 'negative'}">${formatPct(p.annual_return)}</div>
+        </div>
+        <div class="stat-card accent-purple">
+          <div class="stat-label">最大回撤</div>
+          <div class="stat-value negative">${formatPct(p.max_drawdown)}</div>
+        </div>
+        <div class="stat-card accent-green">
+          <div class="stat-label">夏普比率</div>
+          <div class="stat-value">${p.sharpe_ratio?.toFixed(2) || '--'}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">🎯</div>
+          <div class="stat-label">胜率</div>
+          <div class="stat-value">${formatPct(p.win_rate)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">⚖️</div>
+          <div class="stat-label">盈亏比</div>
+          <div class="stat-value">${p.profit_loss_ratio?.toFixed(2) || '--'}</div>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:16px">
+        <div style="display:flex;gap:28px;flex-wrap:wrap;font-size:13px;color:var(--text-secondary)">
+          <span>📊 总交易: <strong style="color:var(--text-primary);font-family:'JetBrains Mono',monospace">${p.total_trades}</strong> 次</span>
+          <span>📅 交易天数: <strong style="color:var(--text-primary);font-family:'JetBrains Mono',monospace">${p.trading_days || '--'}</strong></span>
+          <span>💵 最终资产: <strong style="color:var(--text-primary);font-family:'JetBrains Mono',monospace">¥${formatNum(p.final_value)}</strong></span>
+        </div>
+      </div>`;
+    toast('回测完成', 'success');
+  } else {
+    r.innerHTML = '<p class="negative" style="margin-top:12px">❌ ' + (data.message || '回测失败') + '</p>';
+    toast(data.message || '回测失败', 'error');
+  }
+  // 刷新历史
+  const h = await api('/backtest/history');
+  const histDiv = document.getElementById('backtest-history');
+  if (h.data?.length) {
+    histDiv.innerHTML = '<div class="table-wrap"><table><thead><tr><th>策略</th><th>股票</th><th>日期</th><th>收益率</th><th>夏普</th><th>回撤</th></tr></thead><tbody>' +
+      h.data.map(e => `<tr>
+        <td><span class="badge badge-info">${e.strategy}</span></td>
+        <td>${e.codes?.length || 0}只</td>
+        <td>${e.start_date}~${e.end_date}</td>
+        <td class="${e.performance?.total_return >= 0 ? 'positive' : 'negative'}">${formatPct(e.performance?.total_return)}</td>
+        <td>${e.performance?.sharpe_ratio?.toFixed(2) || '--'}</td>
+        <td class="negative">${formatPct(e.performance?.max_drawdown)}</td>
+      </tr>`).join('') +
+      '</tbody></table></div>';
+  } else {
+    histDiv.innerHTML = '<p style="color:var(--text-muted);font-size:13px;padding:12px 0">暂无回测历史记录</p>';
+  }
+}
+
+// ============================================================
+// 因子策略
+// ============================================================
+async function loadFactors() {
+  const data = await api('/strategy/factors');
+  const r = document.getElementById('factor-list');
+  if (data.categories) {
+    r.innerHTML = '<div class="card-grid cols-2" style="margin:0">' +
+      Object.entries(data.categories).map(([cat, items]) => `
+        <div class="stat-card" style="padding:16px 20px">
+          <div class="stat-label" style="margin-bottom:8px">${cat}</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">
+            ${items.map(f => '<span class="badge badge-info">' + f.name + '</span>').join('')}
+          </div>
+        </div>
+      `).join('') + '</div>';
+  } else {
+    r.innerHTML = '<p style="color:var(--text-muted)">无法加载因子信息</p>';
+  }
+}
+
+async function trainModel() {
+  const r = document.getElementById('train-result');
+  r.innerHTML = '<div class="loading"><div class="loading-dots"><span></span><span></span><span></span></div></div><span style="color:var(--text-muted);font-size:13px">模型训练中...</span>';
+  const data = await api('/strategy/train', { method: 'POST', body: JSON.stringify({ model_type: 'LightGBM' }) });
+  if (data.status === 'ok') {
+    const fi = data.data?.feature_importance;
+    r.innerHTML = `
+      <div style="margin-top:12px">
+        <p class="positive" style="font-size:15px;font-weight:600">✅ 训练完成</p>
+        <div style="display:flex;gap:24px;margin-top:10px;flex-wrap:wrap">
+          <div class="stat-card" style="flex:1;min-width:160px;padding:14px 18px">
+            <div class="stat-label">特征数量</div>
+            <div class="stat-value" style="font-size:22px">${data.data?.features || '--'}</div>
+          </div>
+          ${fi ? `
+          <div class="stat-card" style="flex:1;min-width:300px;padding:14px 18px">
+            <div class="stat-label">Top 重要特征</div>
+            <div style="margin-top:8px;font-size:12px">
+              ${fi.slice(0, 5).map((item, i) => `
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                  <span style="color:var(--text-muted);width:20px">#${i + 1}</span>
+                  <span style="flex:1;font-size:12px">${item.name || item[0]}</span>
+                  <span style="font-family:'JetBrains Mono',monospace;color:var(--accent-blue);font-weight:600">${(item.importance || item[1] || 0).toFixed(4)}</span>
+                  <div class="mini-progress" style="width:80px;margin:0"><div class="fill fill-blue" style="width:${((item.importance || item[1] || 0) / (fi[0]?.importance || fi[0]?.[1] || 1)) * 100}%"></div></div>
+                </div>
+              `).join('')}
+            </div>
+          </div>` : ''}
+        </div>
+      </div>`;
+    toast('模型训练完成', 'success');
+  } else {
+    r.innerHTML = '<p class="negative" style="margin-top:12px">❌ ' + (data.message || '训练失败') + '</p>';
+  }
+}
+
+async function getSignals() {
+  const data = await api('/strategy/signals');
+  const r = document.getElementById('signals-result');
+  if (data.status === 'ok' && data.data?.length) {
+    r.innerHTML = '<div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>排名</th><th>股票代码</th><th>预测分数</th></tr></thead><tbody>' +
+      data.data.map(s => `<tr><td><span style="font-weight:700;color:var(--accent-blue)">#${s.rank}</span></td><td>${s.code}</td><td style="font-weight:600">${s.score?.toFixed(4)}</td></tr>`).join('') +
+      '</tbody></table></div>';
+  } else {
+    r.innerHTML = '<p style="color:var(--text-muted);font-size:13px;margin-top:12px">' + (data.message || '暂无信号，请先执行模型训练和预测') + '</p>';
+  }
+}
+
+// ============================================================
+// 交易监控
+// ============================================================
+async function refreshPositions() {
+  const data = await api('/monitor/positions');
+  const r = document.getElementById('positions-table');
+  if (data.data?.length) {
+    r.innerHTML = '<div class="table-wrap"><table><thead><tr><th>股票代码</th><th>持仓数量</th><th>可用数量</th><th>成本价</th><th>市值</th></tr></thead><tbody>' +
+      data.data.map(p => `<tr>
+        <td style="font-weight:600">${p.stock_code}</td>
+        <td>${p.volume}</td>
+        <td>${p.can_use_volume}</td>
+        <td>${p.open_price?.toFixed(2)}</td>
+        <td style="font-weight:600">¥${p.market_value?.toFixed(2)}</td>
+      </tr>`).join('') +
+      '</tbody></table></div>';
+  } else {
+    r.innerHTML = '<p style="color:var(--text-muted);font-size:13px;padding:16px 0">暂无持仓数据</p>';
+  }
+}
+
+async function refreshOrders() {
+  const data = await api('/monitor/orders');
+  const r = document.getElementById('orders-table');
+  if (data.data?.length) {
+    r.innerHTML = '<div class="table-wrap"><table><thead><tr><th>订单号</th><th>股票</th><th>委托量</th><th>已成交</th><th>价格</th><th>状态</th></tr></thead><tbody>' +
+      data.data.map(o => `<tr>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:12px">${o.order_id}</td>
+        <td>${o.stock_code}</td>
+        <td>${o.order_volume}</td>
+        <td><span class="positive">${o.traded_volume}</span></td>
+        <td>¥${o.price?.toFixed(2)}</td>
+        <td><span class="badge badge-info">${o.status}</span></td>
+      </tr>`).join('') +
+      '</tbody></table></div>';
+  } else {
+    r.innerHTML = '<p style="color:var(--text-muted);font-size:13px;padding:16px 0">暂无委托数据</p>';
+  }
+}
+
+// ============================================================
+// 风险控制
+// ============================================================
+async function refreshRisk() {
+  const data = await api('/risk/status');
+  const r = document.getElementById('risk-status');
+  if (data.data) {
+    const melt = data.data.meltdown;
+    // 更新概览卡片
+    document.getElementById('risk-melt-status').innerHTML =
+      '<span class="badge ' + (melt ? 'badge-danger' : 'badge-success') + '" style="font-size:13px">' + (melt ? '⚠ 已触发' : '● 正常') + '</span>';
+    document.getElementById('risk-daily-pnl').innerHTML =
+      '<span class="' + (data.data.daily_pnl >= 0 ? 'positive' : 'negative') + '">' + (data.data.daily_pnl >= 0 ? '+' : '') + '¥' + formatNum(data.data.daily_pnl) + '</span>';
+
+    r.innerHTML = `
+      <div style="display:flex;gap:28px;flex-wrap:wrap;align-items:center;font-size:13px">
+        <div>
+          <span style="color:var(--text-muted)">熔断状态</span>
+          <span class="badge ${melt ? 'badge-danger' : 'badge-success'}" style="margin-left:8px">${melt ? '⚠ 已触发' : '● 正常'}</span>
+          ${melt ? '<span style="color:var(--negative);margin-left:8px;font-size:12px">' + (data.data.meltdown_reason || '') + '</span>' : ''}
+        </div>
+        <div><span style="color:var(--text-muted)">当日盈亏</span> <span class="${data.data.daily_pnl >= 0 ? 'positive' : 'negative'}" style="margin-left:8px;font-weight:600;font-family:JetBrains Mono,monospace">${data.data.daily_pnl >= 0 ? '+' : ''}¥${formatNum(data.data.daily_pnl)}</span></div>
+        <div><span style="color:var(--text-muted)">当日交易</span> <span style="margin-left:8px;font-weight:600;font-family:JetBrains Mono,monospace;color:var(--text-primary)">${data.data.daily_trade_count} 次</span></div>
+        <div><span style="color:var(--text-muted)">起始权益</span> <span style="margin-left:8px;font-weight:600;font-family:JetBrains Mono,monospace;color:var(--text-primary)">¥${formatNum(data.data.start_equity)}</span></div>
+        ${melt ? '<button class="btn btn-outline btn-sm" onclick="resetMeltdown()">🔄 重置熔断</button>' : ''}
+      </div>`;
+  }
+}
+
+async function loadRiskConfig() {
+  const data = await api('/risk/config');
+  const r = document.getElementById('risk-config');
+  if (data.data) {
+    r.innerHTML = '<div class="card-grid cols-2" style="margin:0">' +
+      Object.entries(data.data).map(([k, v]) => `
+        <div class="stat-card" style="padding:14px 18px">
+          <div class="stat-label" style="font-size:10px;margin-bottom:4px">${k}</div>
+          <div style="font-weight:600;font-size:14px;font-family:'JetBrains Mono',monospace;color:var(--text-primary)">${v}</div>
+        </div>
+      `).join('') + '</div>';
+  }
+}
+
+async function resetMeltdown() {
+  await api('/risk/reset', { method: 'POST' });
+  refreshRisk();
+  toast('熔断已重置', 'success');
+}
+
+// ============================================================
+// 初始化
+// ============================================================
+loadDashboard();
+</script>
+</body>
+</html>

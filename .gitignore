@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 数据库
+*.db
+*.db-shm
+*.db-wal
+quant.db
+
+# 数据文件
+data/kline/
+data/financial/
+data/qlib_data_cn/
+data/xtdata/
+
+# 模型文件
+models/
+
+# 日志
+logs/
+*.log
+
+# 配置文件（敏感信息）
+config/accounts.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 回测报告
+backtest_report.html
+*.html.report
+
+# 操作系统
+.DS_Store
+Thumbs.db
