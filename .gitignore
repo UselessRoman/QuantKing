@@ -46,6 +46,7 @@ config/accounts.yaml
 # 回测报告
 backtest_report.html
 *.html.report
+*.html
 
 # 操作系统
 .DS_Store
