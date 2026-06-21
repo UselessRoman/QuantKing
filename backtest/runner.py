@@ -57,6 +57,11 @@ class BacktestRunner:
         self.cerebro.broker.addcommissioninfo(AShareCommission())
 
         # 添加默认分析器
+        #   TimeReturn / Transactions 是 BacktestAnalyzer 的数据来源（必须挂载），
+        #   其余为 backtrader 内置指标，便于直接 get_analysis() 交叉核对。
+        self.cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn',
+                                 timeframe=bt.TimeFrame.Days)
+        self.cerebro.addanalyzer(bt.analyzers.Transactions, _name='transactions')
         self.cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name='trades')
         self.cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe',
                                  riskfreerate=0.02, annualize=True)
@@ -157,7 +162,10 @@ class BacktestRunner:
         results = self.cerebro.run()
         end_value = self.cerebro.broker.getvalue()
 
-        performance = self.analyzer.analyze(self.cerebro, self.initial_capital)
+        # analyze() 接收已运行的策略实例（cerebro.run 的返回值），
+        # 从其挂载的 analyzer 提取净值/交易数据，不再重复执行回测。
+        strat = results[0] if results else None
+        performance = self.analyzer.analyze(strat, self.initial_capital) if strat else self.analyzer._empty_result()
 
         # 补充最终资产信息
         performance['final_value'] = round(end_value, 2)
@@ -170,6 +178,45 @@ class BacktestRunner:
             'total_return_pct': round((end_value / start_value - 1) * 100, 2),
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
+
+    def run_qlib_signal(self, codes: list[str], signals: dict[str, list[str]],
+                        start_date: str = '', end_date: str = '',
+                        top_k: int = 20, rebalance_freq: int = 20,
+                        period: str = '1d') -> dict:
+        """
+        qlib 信号驱动回测专用入口
+
+        QlibSignalStrategy 的选股信号必须通过 params 在 cerebro 实例化策略时注入，
+        普通的 set_strategy 路径无法传递，因此提供此专用方法。
+
+        参数:
+            codes:           回测股票池
+            signals:         {date_str(YYYYMMDD): [入选股票代码]}
+            start_date:      数据起始日期
+            end_date:        数据结束日期
+            top_k:           目标持仓数
+            rebalance_freq:  调仓间隔（交易日）
+            period:          K线周期
+
+        返回:
+            dict: 回测结果（同 run()）
+        """
+        from backtest.bt_strategy import QlibSignalStrategy
+
+        loaded = self.load_data_from_db(codes, start_date, end_date, period=period)
+        if loaded == 0:
+            return {'error': '未加载到任何K线数据'}
+
+        self.cerebro.addstrategy(
+            QlibSignalStrategy,
+            signals=signals,
+            codes=codes,
+            top_k=top_k,
+            rebalance_freq=rebalance_freq,
+        )
+        print(f"已设置 qlib 信号策略: 持仓 {top_k} 只, 调仓间隔 {rebalance_freq} 天, "
+              f"信号日期数 {len(signals)}")
+        return self.run()
 
     def run_quick(self, codes: list[str], strategy_name: str,
                   start_date: str = '', end_date: str = '',

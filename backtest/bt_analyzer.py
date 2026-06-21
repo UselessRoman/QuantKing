@@ -2,8 +2,7 @@
 """
 回测绩效分析模块（backtrader 版本）
 
-集成 quantstats 库生成专业绩效报告，同时复用现有项目
-backtest/analyzer.py 中的计算逻辑。
+集成 quantstats 库生成专业绩效报告，同时提供独立的绩效指标计算。
 
 绩效指标:
     - 总收益率、年化收益率
@@ -13,63 +12,75 @@ backtest/analyzer.py 中的计算逻辑。
     - 净值曲线、回撤曲线
     - 月度收益率热力图（依赖 quantstats）
 
+▌数据来源约定（重要）
+    analyze() 不再自行执行 cerebro.run()，而是消费调用方已运行得到的
+    backtrader Strategy 实例，从其挂载的 analyzer 中提取数据：
+
+    - bt.analyzers.TimeReturn    → 每日收益率序列（用于净值曲线、夏普、回撤）
+    - bt.analyzers.Transactions  → 逐笔成交记录（用于胜率、盈亏比、交易明细）
+
+    BacktestRunner 已统一挂载这两个 analyzer。若 strat 上未挂载，analyze()
+    会回退到 broker.getvalue()，但 trading_days / 交易统计将不可靠，
+    并在日志中给出警告。
+
 使用方式:
     from backtest.bt_analyzer import BacktestAnalyzer
 
     analyzer = BacktestAnalyzer()
-    result = analyzer.analyze(cerebro, initial_capital)
-    analyzer.generate_report(result, "report.html")
+    strat = cerebro.run()[0]
+    performance = analyzer.analyze(strat, initial_capital=100000)
+    print(analyzer.format_report(performance))
 """
 import math
-import pandas as pd
+from typing import Optional
+
 import numpy as np
-from datetime import datetime
+import pandas as pd
+
+from utils.logging import get_logger
+
+_logger = get_logger("bt_analyzer")
 
 
 class BacktestAnalyzer:
     """
     回测绩效分析器
 
-    从 backtrader 的 Cerebro 结果中提取并计算多种绩效指标。
+    从已运行的 backtrader Strategy 实例中提取并计算多种绩效指标。
 
     使用方式:
         analyzer = BacktestAnalyzer()
-        performance = analyzer.analyze(cerebro, initial_capital=100000)
+        strat = cerebro.run()[0]
+        performance = analyzer.analyze(strat, initial_capital=100000)
         print(analyzer.format_report(performance))
     """
 
-    def analyze(self, cerebro, initial_capital: float = 100000) -> dict:
+    def analyze(self, strat, initial_capital: float = 100000) -> dict:
         """
-        从 Cerebro 运行结果中提取绩效指标
+        从已运行的策略实例中提取绩效指标
 
         参数:
-            cerebro:         backtrader.Cerebro 实例（需已执行 run()）
+            strat:           backtrader 策略实例（cerebro.run() 的返回值），
+                             需已挂载 TimeReturn / Transactions analyzer
             initial_capital: 初始资金
 
         返回:
             dict: 完整绩效指标
         """
-        try:
-            # 获取净值曲线
-            equity = self._get_equity_curve(cerebro)
-        except Exception:
-            equity = pd.Series()
+        equity = self._equity_from_strategy(strat, initial_capital)
+        trades = self._get_trade_records(strat)
 
-        try:
-            trades = self._get_trade_records(cerebro)
-        except Exception:
-            trades = []
-
-        if equity.empty:
+        if equity is None or equity.empty:
+            _logger.warning("未能从策略中提取净值曲线，绩效指标将不可靠")
             return self._empty_result()
 
         # 基础指标
-        total_return = equity.iloc[-1] / initial_capital - 1 if len(equity) > 0 else 0
-        trading_days = len(equity)
+        total_return = float(equity.iloc[-1] / initial_capital - 1)
+        trading_days = int(len(equity))
         years = max(trading_days / 252, 1 / 252)
         annual_return = (1 + total_return) ** (1 / years) - 1 if total_return > -1 else 0
 
-        # 最大回撤
+        # 最大回撤（基于归一化净值）
         max_dd = self._calc_max_drawdown(equity / initial_capital)
 
         # 夏普比率
@@ -91,110 +102,163 @@ class BacktestAnalyzer:
             'profit_loss_ratio': round(profit_loss_ratio, 4),
             'total_trades': total_trades,
             'trading_days': trading_days,
-            'final_value': round(float(equity.iloc[-1]), 2) if len(equity) > 0 else initial_capital,
+            'final_value': round(float(equity.iloc[-1]), 2),
             'equity_curve': equity_curve,
             'drawdown_curve': drawdown_curve,
             'trade_records': trades,
         }
 
-    def _get_equity_curve(self, cerebro) -> pd.Series:
-        """从 Cerebro 提取净值曲线"""
+    # ──────────── 数据提取 ────────────
+
+    def _equity_from_strategy(self, strat, initial_capital: float) -> Optional[pd.Series]:
+        """
+        从策略挂载的 analyzer 提取每日净值曲线
+
+        优先使用 TimeReturn analyzer 的日收益率序列，累乘还原为净值曲线；
+        若未挂载则回退到单点 broker 总资产（此时无法计算夏普/回撤序列）。
+        """
+        daily_returns = self._extract_daily_returns(strat)
+        if daily_returns is not None and len(daily_returns) > 0:
+            returns = pd.Series(daily_returns)
+            # 由日收益率累乘得到净值（起点为 initial_capital）
+            equity = initial_capital * (1 + returns).cumprod()
+            return equity
+
+        _logger.warning("策略未挂载 TimeReturn analyzer，回退到单点净值")
         try:
-            stats = cerebro.run()
-            if not stats:
-                return pd.Series()
-
-            strat = stats[0]
-            # 尝试使用 analyzers
-            values = []
-            for analyzer in strat.analyzers:
-                analysis = analyzer.get_analysis()
-                if hasattr(analysis, 'items'):
-                    for k, v in analysis.items():
-                        if 'value' in str(k).lower() or 'equity' in str(k).lower():
-                            if isinstance(v, (int, float)):
-                                values.append(v)
-
-            if values:
-                return pd.Series(values)
-
-            # 回退：使用 broker 最终值
-            return pd.Series([cerebro.broker.getvalue()])
-
+            return pd.Series([float(strat.broker.getvalue())])
         except Exception:
-            return pd.Series()
+            return None
 
-    def _get_trade_records(self, cerebro) -> list[dict]:
-        """从 Cerebro 提取交易记录"""
-        trades = []
+    def _extract_daily_returns(self, strat) -> Optional[dict]:
+        """从策略的 analyzer 中查找 TimeReturn 分析结果"""
         try:
-            stats = cerebro.run()
-            if not stats:
-                return trades
+            for analyzer in strat.analyzers:
+                if analyzer.__class__.__name__ != 'TimeReturn':
+                    continue
+                analysis = analyzer.get_analysis()
+                if hasattr(analysis, 'items') and len(analysis) > 0:
+                    return dict(analysis)
+        except Exception:
+            return None
+        return None
 
-            for strat in stats:
-                for trade in strat.trades:
-                    # backtrader 的 trade 对象中:
-                    # - trade.price 是平均成交价（trade 关闭时可用）
-                    # - 历史交易需从 trade.history 中获取开仓细节
-                    entry_price = trade.price if hasattr(trade, 'price') else 0
-                    exit_price = entry_price  # backtrader 单价格记录
+    def _get_trade_records(self, strat) -> list[dict]:
+        """
+        从策略的 Transactions analyzer 提取交易记录
+
+        Transactions analyzer 返回 {datetime: [(data, size, price), ...]}，
+        将其展平为标准记录列表。失败时回退到 strat 的已平仓交易列表。
+        """
+        trades: list[dict] = []
+
+        # 优先：Transactions analyzer
+        try:
+            for analyzer in strat.analyzers:
+                if analyzer.__class__.__name__ != 'Transactions':
+                    continue
+                analysis = analyzer.get_analysis()
+                if not hasattr(analysis, 'items'):
+                    continue
+                for dt, txn_list in analysis.items():
+                    for item in txn_list:
+                        # backtrader: (data, size, price) 或 (data, size, price, commission)
+                        data, size, price = item[0], item[1], item[2]
+                        trades.append({
+                            'datetime': str(dt),
+                            'symbol': getattr(data, '_name', ''),
+                            'size': float(size),
+                            'price': float(price),
+                        })
+                if trades:
+                    return trades
+        except Exception:
+            trades = []
+
+        # 回退：strat._trades（已平仓交易）
+        try:
+            closed = getattr(strat, '_trades', {}) or {}
+            for trade_list in closed.values():
+                for trade in trade_list:
+                    if not trade.isclosed:
+                        continue
                     trades.append({
-                        'symbol': trade.data._name if hasattr(trade.data, '_name') else '',
-                        'entry_date': str(trade.dtopen) if trade.dtopen else '',
-                        'exit_date': str(trade.dtclose) if trade.dtclose else '',
-                        'entry_price': entry_price,
-                        'exit_price': exit_price,
-                        'pnl': trade.pnl,
-                        'pnl_comm': trade.pnlcomm,
-                        'size': trade.size,
+                        'symbol': getattr(trade.data, '_name', ''),
+                        'entry_price': float(trade.price),
+                        'exit_price': float(trade.price) + float(trade.pnlcomm) / max(abs(trade.size), 1),
+                        'pnl': float(trade.pnl),
+                        'pnl_comm': float(trade.pnlcomm),
+                        'size': int(trade.size),
                     })
         except Exception:
             pass
         return trades
 
+    # ──────────── 纯算法（可独立单测）────────────
+
     def _calc_max_drawdown(self, equity: pd.Series) -> float:
-        peak = equity.iloc[0]
+        if equity is None or len(equity) == 0:
+            return 0.0
+        peak = float(equity.iloc[0])
         max_dd = 0.0
         for v in equity.values:
-            if v > peak:
-                peak = v
-            dd = (peak - v) / peak if peak > 0 else 0
-            max_dd = max(max_dd, dd)
+            fv = float(v)
+            if fv > peak:
+                peak = fv
+            dd = (peak - fv) / peak if peak > 0 else 0
+            if dd > max_dd:
+                max_dd = dd
         return max_dd
 
     def _calc_sharpe(self, equity: pd.Series) -> float:
+        if equity is None or len(equity) < 2:
+            return 0.0
         returns = equity.pct_change().dropna()
-        if len(returns) < 2 or returns.std() == 0:
+        if len(returns) < 2:
+            return 0.0
+        std_ret = returns.std()
+        if std_ret == 0 or np.isnan(std_ret):
             return 0.0
         daily_rf = 0.02 / 252
         mean_ret = returns.mean()
-        std_ret = returns.std()
-        return (mean_ret - daily_rf) / std_ret * math.sqrt(252) if std_ret > 0 else 0.0
+        return (mean_ret - daily_rf) / std_ret * math.sqrt(252)
 
     def _calc_trade_stats(self, trades: list[dict]) -> tuple[float, float, int]:
+        """胜率 / 盈亏比 / 总交易笔数"""
         if not trades:
             return 0.0, 0.0, 0
 
-        profits = [t['pnl'] for t in trades if t.get('pnl', 0) > 0]
-        losses = [abs(t['pnl']) for t in trades if t.get('pnl', 0) < 0]
+        # 统一口径：取 pnl（已平仓交易）。Transactions 模式无 pnl，跳过逐笔盈亏统计。
+        pnls = []
+        for t in trades:
+            pnl = t.get('pnl')
+            if pnl is None:
+                continue
+            pnls.append(float(pnl))
 
+        if not pnls:
+            # 有交易记录但无 pnl 字段，仅返回笔数
+            return 0.0, 0.0, len(trades)
+
+        profits = [p for p in pnls if p > 0]
+        losses = [abs(p) for p in pnls if p < 0]
         total = len(profits) + len(losses)
         win_rate = len(profits) / total if total > 0 else 0
-
         avg_profit = sum(profits) / len(profits) if profits else 0
         avg_loss = sum(losses) / len(losses) if losses else 0
         pl_ratio = avg_profit / avg_loss if avg_loss > 0 else 0
-
         return win_rate, pl_ratio, total
 
     def _calc_drawdown_curve(self, equity: pd.Series) -> dict:
+        if equity is None or len(equity) == 0:
+            return {}
         dd_curve = {}
-        peak = equity.iloc[0]
+        peak = float(equity.iloc[0])
         for i, v in equity.items():
-            if v > peak:
-                peak = v
-            dd = (peak - v) / peak if peak > 0 else 0
+            fv = float(v)
+            if fv > peak:
+                peak = fv
+            dd = (peak - fv) / peak if peak > 0 else 0
             dd_curve[str(i)] = round(dd, 4)
         return dd_curve
 
@@ -218,7 +282,7 @@ class BacktestAnalyzer:
             output_path: 输出文件路径
 
         返回:
-            str: 报告 HTML 内容
+            str: 报告 HTML 内容或纯文本报告
         """
         try:
             import quantstats as qs
