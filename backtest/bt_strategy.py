@@ -209,35 +209,72 @@ class QlibSignalStrategy(bt.Strategy):
     在每个调仓日读取 qlib 预测信号，买入 Top-K 股票，
     卖出落选持仓。等权分配资金。
 
+    信号注入方式（重要）:
+        backtrader 在 cerebro.run() 时自行实例化策略，外部无法在实例化后
+        再调用方法注入数据。因此信号必须通过 params 在 addstrategy 时传入：
+
+            cerebro.addstrategy(
+                QlibSignalStrategy,
+                signals={'20230103': ['000001.SZ', ...]},  # {date_str: [codes]}
+                codes=['000001.SZ', ...],                  # 可选，股票池
+                top_k=20, rebalance_freq=20,
+            )
+
+        推荐使用 BacktestRunner.run_qlib_signal() 一步到位。
+
     参数:
-        signal_provider: 信号生成器实例（SignalGenerator）
-        top_k:           持仓数量
-        rebalance_freq:  调仓频率（交易日数），默认 20
-        codes:           可选股票池列表
+        signals:        选股信号 {date_str(YYYYMMDD): [股票代码]}
+        codes:          可选股票池（用于校验/过滤）
+        top_k:          持仓数量
+        rebalance_freq: 调仓频率（交易日数），默认 20
     """
     params = (
+        ('signals', None),
+        ('codes', None),
         ('top_k', 20),
         ('rebalance_freq', 20),
     )
 
     def __init__(self):
-        self._signals: dict = {}        # {date_str: [codes]}
-        self._signal_provider = None
-        self._codes = None
+        # 转为按整数日期排序的列表，便于按调仓日就近匹配
+        raw = self.params.signals or {}
+        self._signals: dict[str, list[str]] = {
+            str(d): list(cs) for d, cs in raw.items()
+        }
+        self._sorted_signal_dates: list[str] = sorted(self._signals.keys())
         self._bar_count = 0
         self._buy_date: dict[str, str] = {}  # {code: buy_date} T+1 记录
 
     def set_signals(self, signals: dict):
-        """设置预先生成的选股信号 {date: [codes]}"""
-        self._signals = signals
+        """
+        ⚠ 兼容旧接口，运行期注入无效。
+
+        backtrader 实例化策略发生在 cerebro.run() 内部，此方法在 run 之后
+        调用无法影响已完成的回测。请改用 params（addstrategy(signals=...)）
+        或 BacktestRunner.run_qlib_signal() 注入信号。
+        """
+        # 仍更新内部状态，便于单元测试构造场景
+        self._signals = {str(d): list(cs) for d, cs in (signals or {}).items()}
+        self._sorted_signal_dates = sorted(self._signals.keys())
 
     def set_codes(self, codes: list[str]):
-        """设置股票池"""
-        self._codes = codes
+        """设置股票池（兼容旧接口，建议通过 params.codes 传入）"""
+        self.params.codes = codes
 
     def _is_rebalance_day(self) -> bool:
         """判断是否为调仓日"""
         return self._bar_count % self.params.rebalance_freq == 0
+
+    def _get_target_codes(self, current_date: str) -> list[str]:
+        """取距离当前日期最近的信号日的选股列表"""
+        if not self._sorted_signal_dates:
+            return []
+        # 信号日为 YYYYMMDD 字符串，可按整数大小比较
+        closest_date = min(
+            self._sorted_signal_dates,
+            key=lambda d: abs(int(d) - int(current_date)),
+        )
+        return self._signals.get(closest_date, [])
 
     def next(self):
         self._bar_count += 1
@@ -245,29 +282,25 @@ class QlibSignalStrategy(bt.Strategy):
         if not self._is_rebalance_day():
             return
 
+        if not self._signals:
+            return
+
         current_date = self.datas[0].datetime.date(0).strftime('%Y%m%d')
-
-        # 获取当前信号的选股列表
-        target_codes = []
-        if self._signals:
-            closest_date = min(self._signals.keys(),
-                               key=lambda d: abs(int(d) - int(current_date)))
-            target_codes = self._signals.get(closest_date, [])
-
+        target_codes = self._get_target_codes(current_date)
         if not target_codes:
             return
 
         # 计算等权资金
         total_value = self.broker.getvalue()
-        per_stock_value = total_value / len(target_codes)
+        per_stock_value = total_value / self.params.top_k
 
         # 卖出不在目标池的持仓
         for data in self.datas:
             pos = self.getposition(data)
             code = data._name
             if pos.size > 0 and code not in target_codes:
-                # T+1 检查
-                if code in self._buy_date and self._buy_date[code] == current_date:
+                # T+1 检查：当日买入不可卖
+                if self._buy_date.get(code) == current_date:
                     continue
                 self.close(data=data)
 
@@ -285,8 +318,8 @@ class QlibSignalStrategy(bt.Strategy):
                     self._buy_date[code] = current_date
 
     def notify_order(self, order):
-        if order.status == order.Completed:
-            pass
+        # 订单完成后再无额外处理；保留钩子便于子类扩展
+        pass
 
 
 # ─── 策略注册表 ───
