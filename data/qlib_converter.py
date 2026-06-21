@@ -25,30 +25,60 @@ qlib 数据目录结构:
     convert_kline_to_qlib_format()
 """
 import os
-import struct
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
 from config.settings import KLINE_DIR, QLIB_DATA_DIR
 from data.database import Database
+from utils.logging import get_logger
+
+_logger = get_logger("qlib_converter")
 
 
-def _write_bin_file(file_path: Path, dates: list, values: list):
-    """写入单个 qlib 二进制特征文件"""
+def _normalize_date(date_str) -> str:
+    """
+    将各种日期格式统一为 qlib 日频日历要求的 YYYY-MM-DD
+
+    支持输入: '20230103' / '20230103' / 20230103 / '2023-01-03' / Timestamp
+    """
+    if date_str is None or date_str == '':
+        return ''
+    s = str(date_str).strip()
+    if not s:
+        return ''
+    # 已经是 ISO 格式
+    if len(s) == 10 and s[4] == '-' and s[7] == '-':
+        return s
+    # YYYYMMDD 数字串或整数
+    digits = s.replace('-', '').replace('/', '')
+    if len(digits) == 8 and digits.isdigit():
+        return f"{digits[0:4]}-{digits[4:6]}-{digits[6:8]}"
+    # 兜底：交给 pandas 解析
+    try:
+        return pd.to_datetime(s).strftime('%Y-%m-%d')
+    except Exception:
+        return ''
+
+
+def _write_bin_file(file_path: Path, values: np.ndarray):
+    """
+    写入单个 qlib 二进制特征文件
+
+    qlib 的 features/<code>/<field>.day.bin 格式为**纯 float32 小端序列**，
+    长度必须等于 calendars/day.txt 的总交易日数，按日历顺序对齐——
+    股票在该交易日无数据的位置填 NaN。
+
+    历史 BUG: 旧实现每条记录写 int32(日期)+float32(值)，qlib 按 float32
+    读取会把日期当作价格，整份数据错位损坏。本实现已修正为纯 float32。
+
+    参数:
+        file_path: 输出 .bin 路径
+        values:    已与全局日历对齐的 float32 数组（缺失值用 np.nan）
+    """
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(file_path, 'wb') as f:
-        for date_str, val in zip(dates, values):
-            # qlib 格式: date(int64) + value(float32)
-            try:
-                date_int = int(date_str)
-            except (ValueError, TypeError):
-                continue
-            try:
-                f.write(struct.pack('<i', date_int))  # 日期 int32
-                f.write(struct.pack('<f', float(val) if not np.isnan(val) else 0.0))  # float32
-            except (TypeError, ValueError):
-                continue
+    arr = np.asarray(values, dtype='<f4')  # 小端 float32，NaN 原生支持
+    arr.tofile(file_path)
 
 
 def convert_kline_to_qlib_format(
@@ -58,6 +88,20 @@ def convert_kline_to_qlib_format(
 ) -> int:
     """
     将现有 Parquet K线数据转换为 qlib 二进制格式
+
+    产出 qlib 标准目录结构（日频）:
+        data/qlib_data_cn/
+        ├── calendars/day.txt        # 全市场交易日并集（YYYY-MM-DD，每行一个）
+        ├── instruments/all.txt      # code<TAB>start<TAB>end（YYYY-MM-DD）
+        └── features/<code>/
+            ├── open.1d.bin          # 纯 float32 序列，长度 = 日历天数
+            ├── high.1d.bin
+            ├── low.1d.bin
+            ├── close.1d.bin
+            ├── volume.1d.bin
+            └── amount.1d.bin
+
+    对齐规则: 每只股票的特征数组按全局日历对齐，上市前/退市后/停牌日填 NaN。
 
     参数:
         parquet_dir: Parquet 数据目录，默认使用 KLINE_DIR
@@ -72,89 +116,114 @@ def convert_kline_to_qlib_format(
     parquet_path = kline_dir / period
 
     if not parquet_path.exists():
-        print(f"Parquet 数据目录不存在: {parquet_path}")
+        _logger.error("Parquet 数据目录不存在: %s", parquet_path)
         return 0
 
-    # 创建 qlib 目录结构
     calendars_dir = qlib_dir / "calendars"
     instruments_dir = qlib_dir / "instruments"
     features_dir = qlib_dir / "features"
-    calendars_dir.mkdir(parents=True, exist_ok=True)
-    instruments_dir.mkdir(parents=True, exist_ok=True)
-    features_dir.mkdir(parents=True, exist_ok=True)
+    for d in (calendars_dir, instruments_dir, features_dir):
+        d.mkdir(parents=True, exist_ok=True)
 
-    # 收集所有 parquet 文件
     parquet_files = list(parquet_path.glob("*.parquet"))
     if not parquet_files:
-        print(f"未找到 Parquet 文件: {parquet_path}")
+        _logger.error("未找到 Parquet 文件: %s", parquet_path)
         return 0
 
-    print(f"找到 {len(parquet_files)} 个 Parquet 文件，开始转换...")
+    _logger.info("找到 %d 个 Parquet 文件，开始转换...", len(parquet_files))
 
-    all_dates: set[str] = set()
-    instruments: list[tuple[str, str, str]] = []  # (code, start_date, end_date)
-    success_count = 0
+    field_map = {
+        'open': 'open', 'high': 'high', 'low': 'low',
+        'close': 'close', 'volume': 'volume', 'amount': 'amount',
+    }
+
+    # ── 第一遍：读取所有股票，归一化日期，收集全局日历 ──
+    # stock_data: {code: {'df': sorted_df, 'iso_dates': np.array[str]}}
+    stock_data: dict[str, dict] = {}
+    all_iso_dates: set[str] = set()
 
     for i, pq_file in enumerate(parquet_files):
         try:
-            code = pq_file.stem  # 文件名即股票代码
+            code = pq_file.stem
             df = pd.read_parquet(pq_file)
-
             if df.empty or 'date' not in df.columns:
                 continue
 
-            # 收集日期
-            dates = sorted(df['date'].unique())
-            all_dates.update(dates)
+            df = df.sort_values('date').reset_index(drop=True)
+            iso_dates = np.array([_normalize_date(d) for d in df['date'].tolist()])
+            # 过滤无法解析的日期
+            mask = iso_dates != ''
+            if not mask.all():
+                df = df[mask].reset_index(drop=True)
+                iso_dates = iso_dates[mask]
+            if len(df) == 0:
+                continue
 
-            # 记录股票信息
-            start_date = dates[0]
-            end_date = dates[-1]
+            df['_iso_date'] = iso_dates
+            # 去重（同一交易日保留最后一条）
+            df = df.drop_duplicates(subset='_iso_date', keep='last').reset_index(drop=True)
+            iso_dates = df['_iso_date'].to_numpy()
+
+            stock_data[code] = {'df': df, 'iso_dates': iso_dates}
+            all_iso_dates.update(iso_dates.tolist())
+
+            if (i + 1) % 500 == 0:
+                _logger.info("读取进度: %d/%d", i + 1, len(parquet_files))
+        except Exception as e:
+            _logger.warning("读取 %s 失败: %s", pq_file.name, e)
+
+    if not stock_data:
+        _logger.error("没有可转换的有效数据")
+        return 0
+
+    # ── 建立全局日历（交易日并集，升序）──
+    calendar: list[str] = sorted(all_iso_dates)
+    cal_index = {d: i for i, d in enumerate(calendar)}
+    n_cal = len(calendar)
+
+    _logger.info("全局交易日历: %d 天 (%s ~ %s)", n_cal, calendar[0], calendar[-1])
+
+    # 写日历
+    with open(calendars_dir / "day.txt", 'w', encoding='utf-8') as f:
+        f.write("\n".join(calendar))
+
+    # ── 第二遍：按日历对齐写各股票特征 ──
+    instruments: list[tuple[str, str, str]] = []
+    success_count = 0
+
+    for idx, (code, info) in enumerate(stock_data.items()):
+        try:
+            df = info['df']
+            iso_dates = info['iso_dates']
+            start_date, end_date = iso_dates[0], iso_dates[-1]
             instruments.append((code, start_date, end_date))
 
-            # 创建股票特征目录
             stock_dir = features_dir / code
             stock_dir.mkdir(parents=True, exist_ok=True)
 
-            # 转换各字段
-            field_map = {
-                'open': 'open',
-                'high': 'high',
-                'low': 'low',
-                'close': 'close',
-                'volume': 'volume',
-                'amount': 'amount',
-            }
+            # 构造对齐掩码：该股票在全局日历中的有效位置
+            positions = np.array([cal_index[d] for d in iso_dates])
 
             for field, filename in field_map.items():
                 if field not in df.columns:
                     continue
-                bin_file = stock_dir / f"{filename}.{period}.bin"
-                df_sorted = df.sort_values('date')
-                values = df_sorted[field].tolist()
-                file_dates = df_sorted['date'].tolist()
-                _write_bin_file(bin_file, file_dates, values)
+                aligned = np.full(n_cal, np.nan, dtype='<f4')
+                values = df[field].to_numpy(dtype=np.float64)
+                aligned[positions] = values
+                _write_bin_file(stock_dir / f"{filename}.{period}.bin", aligned)
 
             success_count += 1
-
-            if (i + 1) % 100 == 0:
-                print(f"qlib 转换进度: {i + 1}/{len(parquet_files)}")
-
+            if (idx + 1) % 500 == 0:
+                _logger.info("转换进度: %d/%d", idx + 1, len(stock_data))
         except Exception as e:
-            print(f"转换 {pq_file.name} 失败: {e}")
+            _logger.warning("转换 %s 失败: %s", code, e)
 
-    # 写入交易日历
-    sorted_dates = sorted(all_dates)
-    with open(calendars_dir / "day.txt", 'w', encoding='utf-8') as f:
-        f.write("\n".join(sorted_dates))
-
-    # 写入股票列表
+    # 写股票列表
     with open(instruments_dir / "all.txt", 'w', encoding='utf-8') as f:
         for code, start_date, end_date in sorted(instruments):
             f.write(f"{code}\t{start_date}\t{end_date}\n")
 
-    print(f"qlib 数据转换完成: {success_count}/{len(parquet_files)} 只股票")
-    print(f"交易日历: {len(sorted_dates)} 天 ({sorted_dates[0]} ~ {sorted_dates[-1]})")
+    _logger.info("qlib 数据转换完成: %d/%d 只股票", success_count, len(stock_data))
     return success_count
 
 
@@ -162,11 +231,18 @@ def validate_qlib_data(qlib_dir: str = None) -> dict:
     """
     验证 qlib 数据完整性
 
+    校验内容:
+        - calendars/day.txt    行数（全局交易日数）
+        - instruments/all.txt  行数（股票数）
+        - features/<code>/     子目录数
+        - 抽样: 必需字段文件齐全，且每个 .bin 的 float32 记录数 = 日历天数
+          （记录数不匹配通常意味着格式错误，如旧版 int32+float32 写法）
+
     参数:
         qlib_dir: qlib 数据目录
 
     返回:
-        dict: 验证结果，包含 calendars/instruments/features 统计
+        dict: 验证结果，包含 calendars/instruments/features 统计与 errors
     """
     qdir = Path(qlib_dir) if qlib_dir else Path(QLIB_DATA_DIR)
 
@@ -174,25 +250,38 @@ def validate_qlib_data(qlib_dir: str = None) -> dict:
 
     cal_file = qdir / "calendars" / "day.txt"
     if cal_file.exists():
-        with open(cal_file, 'r') as f:
-            result["calendars"] = len(f.readlines())
+        with open(cal_file, 'r', encoding='utf-8') as f:
+            result["calendars"] = sum(1 for line in f if line.strip())
 
     ins_file = qdir / "instruments" / "all.txt"
     if ins_file.exists():
-        with open(ins_file, 'r') as f:
-            result["instruments"] = len(f.readlines())
+        with open(ins_file, 'r', encoding='utf-8') as f:
+            result["instruments"] = sum(1 for line in f if line.strip())
 
     features_dir = qdir / "features"
     if features_dir.exists():
         stock_dirs = [d for d in features_dir.iterdir() if d.is_dir()]
         result["features"] = len(stock_dirs)
 
-        # 抽样检查一个股票的文件完整性
-        if stock_dirs:
+        # 抽样检查一个股票的文件完整性与记录数对齐
+        if stock_dirs and result["calendars"] > 0:
             sample = stock_dirs[0]
             expected_files = ['open', 'high', 'low', 'close', 'volume']
             for ef in expected_files:
-                if not (sample / f"{ef}.1d.bin").exists():
+                bin_file = sample / f"{ef}.1d.bin"
+                if not bin_file.exists():
                     result["errors"].append(f"{sample.name} 缺少 {ef}.1d.bin")
+                    continue
+                # 每个 float32 占 4 字节，记录数必须等于日历天数
+                size_bytes = bin_file.stat().st_size
+                if size_bytes % 4 != 0:
+                    result["errors"].append(
+                        f"{sample.name}/{ef}.1d.bin 字节数 {size_bytes} 非 4 的倍数（格式损坏）")
+                    continue
+                n_records = size_bytes // 4
+                if n_records != result["calendars"]:
+                    result["errors"].append(
+                        f"{sample.name}/{ef}.1d.bin 记录数 {n_records} != 日历天数 "
+                        f"{result['calendars']}（未按日历对齐）")
 
     return result
