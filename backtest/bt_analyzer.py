@@ -66,7 +66,28 @@ class BacktestAnalyzer:
 
         返回:
             dict: 完整绩效指标
+
+        注意:
+            若 strat 未挂载 TimeReturn analyzer，绩效指标（夏普/回撤/净值曲线）
+            将不可靠，结果中会带 unreliable=True 标记并记 error 日志。
+            BacktestRunner.__init__ 已统一挂载这两个 analyzer。
         """
+        # 入口检查：TimeReturn 是净值曲线的数据来源，缺失则指标不可信
+        has_timereturn = self._has_analyzer(strat, 'TimeReturn')
+        has_transactions = self._has_analyzer(strat, 'Transactions')
+        if not has_timereturn:
+            _logger.error(
+                "策略未挂载 TimeReturn analyzer，绩效指标（夏普/回撤/净值曲线）"
+                "将不可靠。请在 BacktestRunner 中调用 "
+                "cerebro.addanalyzer(bt.analyzers.TimeReturn, _name='timereturn', "
+                "timeframe=bt.TimeFrame.Days)"
+            )
+        if not has_transactions:
+            _logger.warning(
+                "策略未挂载 Transactions analyzer，交易统计（胜率/盈亏比）"
+                "将回退到 strat._trades，可能为空"
+            )
+
         equity = self._equity_from_strategy(strat, initial_capital)
         trades = self._get_trade_records(strat)
 
@@ -106,9 +127,23 @@ class BacktestAnalyzer:
             'equity_curve': equity_curve,
             'drawdown_curve': drawdown_curve,
             'trade_records': trades,
+            # 标记指标可信度：未挂载 TimeReturn 时净值曲线退化为单点，
+            # 夏普/回撤/trading_days 不可信，前端可据此提示用户
+            'unreliable': not has_timereturn,
         }
 
     # ──────────── 数据提取 ────────────
+
+    @staticmethod
+    def _has_analyzer(strat, analyzer_class_name: str) -> bool:
+        """检查策略是否挂载了指定名称的 analyzer"""
+        try:
+            for analyzer in strat.analyzers:
+                if analyzer.__class__.__name__ == analyzer_class_name:
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _equity_from_strategy(self, strat, initial_capital: float) -> Optional[pd.Series]:
         """

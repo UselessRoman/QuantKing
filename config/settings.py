@@ -73,27 +73,75 @@ ACCOUNTS_YAML = BASE_DIR / "config" / "accounts.yaml"
 #   account_type: 账号类型，"STOCK" 表示股票账户
 #
 # 账号信息统一从 config/accounts.yaml 加载，settings.py 中不再硬编码。
-# 如果 yaml 文件不存在或解析失败，ACCOUNTS 为空列表。
+# 如果 yaml 文件不存在或解析失败，ACCOUNTS 为空列表并记录日志便于排查。
 _ACCOUNTS_PATH = BASE_DIR / "config" / "accounts.yaml"
+ACCOUNTS: list = []
 try:
     import yaml as _yaml
     if _ACCOUNTS_PATH.exists():
         with open(_ACCOUNTS_PATH, 'r', encoding='utf-8') as _f:
             _raw = _yaml.safe_load(_f)
-            ACCOUNTS = _raw.get('accounts', []) if isinstance(_raw, dict) else []
+            if isinstance(_raw, dict):
+                ACCOUNTS = _raw.get('accounts', [])
+            else:
+                import logging
+                logging.getLogger(__name__).error(
+                    "accounts.yaml 顶层应为 dict，实际为 %s，ACCOUNTS 置空",
+                    type(_raw).__name__
+                )
     else:
-        ACCOUNTS = []
-except Exception:
-    ACCOUNTS = []
+        import logging
+        logging.getLogger(__name__).warning(
+            "账号配置文件不存在: %s，实盘交易功能不可用", _ACCOUNTS_PATH
+        )
+except _yaml.YAMLError as _e:
+    import logging
+    logging.getLogger(__name__).error(
+        "accounts.yaml 解析失败: %s，ACCOUNTS 置空", _e
+    )
+except Exception as _e:
+    import logging
+    logging.getLogger(__name__).error(
+        "加载 accounts.yaml 时发生意外错误: %s，ACCOUNTS 置空", _e
+    )
 
 # 风险控制参数
-RISK_CONFIG = {
+# 优先从 config/risk.yaml 加载（支持运行时热更新），文件缺失或解析失败
+# 则回退到下面的默认值，保证系统可启动。
+_RISK_DEFAULTS = {
     "max_position_per_stock": 100000,     # 单只股票最大持仓（股）
     "max_single_order_ratio": 0.2,        # 单笔订单最大资金占比
     "max_daily_loss_ratio": 0.05,         # 日最大亏损比例（触发熔断）
     "max_drawdown_ratio": 0.20,           # 最大回撤比例（触发熔断）
     "max_holdings_count": 50,             # 最大持仓股票数
 }
+
+RISK_CONFIG_PATH = BASE_DIR / "config" / "risk.yaml"
+RISK_CONFIG: dict = dict(_RISK_DEFAULTS)
+try:
+    import yaml as _yaml
+    if RISK_CONFIG_PATH.exists():
+        with open(RISK_CONFIG_PATH, 'r', encoding='utf-8') as _f:
+            _risk_raw = _yaml.safe_load(_f)
+        if isinstance(_risk_raw, dict):
+            # 用 yaml 值覆盖默认值（缺失键保留默认）
+            RISK_CONFIG.update(_risk_raw)
+        else:
+            import logging
+            logging.getLogger(__name__).error(
+                "risk.yaml 顶层应为 dict，实际为 %s，使用默认风控参数",
+                type(_risk_raw).__name__
+            )
+except _yaml.YAMLError as _e:
+    import logging
+    logging.getLogger(__name__).error(
+        "risk.yaml 解析失败: %s，使用默认风控参数", _e
+    )
+except Exception as _e:
+    import logging
+    logging.getLogger(__name__).error(
+        "加载 risk.yaml 失败: %s，使用默认风控参数", _e
+    )
 
 # 日志配置
 LOG_CONFIG = {

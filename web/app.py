@@ -13,10 +13,12 @@ Web 应用主入口
     /               — 前端静态页面（index.html）
 
 鉴权机制:
-    所有 /api/ 下的写操作（POST/PUT/DELETE）和敏感读操作
-    （/api/monitor/*, /api/risk/*）需要 X-API-Key 请求头。
-    读操作（GET /api/data/*, /api/strategy/list|factors, /api/backtest/strategies|history）
-    不做鉴权要求。
+    默认所有 /api/ 请求都需 X-API-Key 鉴权；仅下列公开只读 GET 放行：
+        /api/data/kline|stocks|sectors|sector_stocks|db-status|stock-klines|financial
+        /api/strategy/list|factors|signals|importance
+        /api/backtest/strategies|history
+    监控（/api/monitor/*）、风控（/api/risk/*）及所有写操作（POST/PUT/DELETE）
+    一律需鉴权。
 """
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -29,10 +31,29 @@ from trading.xt_trader import TraderManager
 from data.database import Database
 from web.routes import data_routes, strategy_routes, backtest_routes, monitor_routes, risk_routes
 
-# 需要鉴权的路径前缀
+# 公开只读 GET 白名单（无需 API Key）。
+# 原则：只放行不涉及敏感账号/风控状态、且为查询性质的 GET 端点；
+#       所有 POST/PUT/DELETE 及 monitor/risk 一律鉴权。
+_READONLY_WHITELIST = {
+    "/api/data/kline",
+    "/api/data/stocks",
+    "/api/data/sectors",
+    "/api/data/sector_stocks",
+    "/api/data/db-status",
+    "/api/data/stock-klines",
+    "/api/data/financial",
+    "/api/strategy/list",
+    "/api/strategy/factors",
+    "/api/strategy/signals",
+    "/api/strategy/importance",
+    "/api/backtest/strategies",
+    "/api/backtest/history",
+}
+
+# 一律鉴权的路径前缀（即使方法是 GET）
 _AUTH_REQUIRED_PREFIXES = (
     "/api/monitor",
-    "/api/risk/reset",
+    "/api/risk",
 )
 
 
@@ -73,11 +94,29 @@ app = FastAPI(
 # ─── API Key 鉴权中间件 ───
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
-    """对敏感路径进行 API Key 验证"""
-    path = request.url.path
+    """API Key 鉴权：默认全部鉴权，仅白名单只读 GET 放行。
 
-    # 仅对需要鉴权的路径前缀进行检查
-    requires_auth = any(path.startswith(prefix) for prefix in _AUTH_REQUIRED_PREFIXES)
+    判定顺序：
+        1. monitor/risk 前缀 → 一律鉴权（含 GET）
+        2. 非白名单的 GET → 鉴权
+        3. 所有 POST/PUT/DELETE → 鉴权
+        4. 白名单内的 GET → 放行
+    """
+    path = request.url.path
+    method = request.method
+
+    # 只对 /api/ 路径做鉴权，静态资源和根路径放行
+    if not path.startswith("/api/"):
+        return await call_next(request)
+
+    requires_auth = False
+    if any(path.startswith(prefix) for prefix in _AUTH_REQUIRED_PREFIXES):
+        requires_auth = True
+    elif method in ("POST", "PUT", "DELETE"):
+        requires_auth = True
+    elif path not in _READONLY_WHITELIST:
+        # 非白名单的 GET 也鉴权（保守策略）
+        requires_auth = True
 
     if requires_auth:
         api_key = request.headers.get("X-API-Key", "")

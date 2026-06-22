@@ -119,7 +119,7 @@ class DataProvider:
 
     def get_kline(self, codes: list[str], period: str = '1d',
                   start_time: str = '', end_time: str = '',
-                  count: int = -1, dividend_type: str = 'front') -> pd.DataFrame:
+                  count: int = -1, dividend_type: str = 'back') -> pd.DataFrame:
         """
         获取K线数据
 
@@ -131,7 +131,12 @@ class DataProvider:
             start_time:    起始时间，YYYYMMDD 格式
             end_time:      结束时间，YYYYMMDD 格式
             count:         获取最近多少根K线，-1 表示全部
-            dividend_type: 复权方式: "front"(前复权) / "back"(后复权) / "none"(不复权)
+            dividend_type: 复权方式: "back"(后复权，默认) / "front"(前复权) / "none"(不复权)
+
+        说明:
+            默认改为后复权("back")。前复权在增量更新时，新的除权事件会改变
+            历史前复权价，导致旧数据和新数据复权基准不一致；后复权以最早价为
+            基准，历史价固定不变，适合回测连续性和增量更新场景。
 
         返回:
             pd.DataFrame: index 为日期/时间，

@@ -152,30 +152,62 @@ class QlibTrainer:
             return {"error": "请安装 lightgbm: pip install lightgbm"}
 
         # 准备特征和标签
+        # 标签列 forward_ret_5d（未来5日收益）必须从特征中排除，否则会造成
+        # 数据泄漏：用未来收益当特征预测未来收益，模型近乎完美拟合但实盘失效。
+        # 旧代码 y = X.get('ret_5d') 把动量因子 ret_5d 当标签，而 ret_5d 同时
+        # 是特征列（过去5日收益），并非未来收益，属于标签构造错误。
         meta_cols = ['code', 'date']
-        feature_cols = [c for c in factors.columns if c not in meta_cols]
+        label_col = 'forward_ret_5d'
+        feature_cols = [
+            c for c in factors.columns
+            if c not in meta_cols and c != label_col
+        ]
 
         if not feature_cols:
             return {"error": "没有可用的特征列"}
 
+        if label_col not in factors.columns:
+            return {
+                "error": f"缺少标签列 {label_col}，请确认 FactorHandler 已构造未来收益标签"
+            }
+
+        # 去掉标签缺失的样本（最后5日无未来收益）
+        factors = factors.dropna(subset=[label_col])
+
         X = factors[feature_cols].copy()
         X = X.replace([np.inf, -np.inf], np.nan)
         X = X.fillna(X.median())
+        y = factors[label_col].copy()
 
-        # 目标: 未来5日收益率
-        y = X.get('ret_5d', pd.Series(0, index=X.index))
-        # 去掉目标列作为特征
-        if 'ret_5d' in X.columns:
-            X = X.drop(columns=['ret_5d'])
-        feature_cols = list(X.columns)
+        # 按日期切分训练/验证集，而非按行数。
+        # 旧代码按 iloc[:0.7] 切分，但 factors 是 groupby('code') concat 后的，
+        # 同一日期不同股票的行被打散到不同位置，切分点可能把同一天数据一半进
+        # 训练一半进验证，造成时间泄漏。改为按交易日历切分。
+        # factors 的 index 为 (date, code)（load_factors 里 set_index），date
+        # 在 index 的 level 0；若被还原成列则直接取列。
+        if 'date' in factors.columns:
+            date_series = factors['date'].copy()
+        elif factors.index.nlevels >= 2:
+            date_series = factors.index.get_level_values(0)
+            # 转为 object 数组便于比较
+            date_series = pd.Series(date_series, index=factors.index)
+        else:
+            return {"error": "无法确定日期列，factors 既无 date 列也无多级索引"}
 
-        # 时间顺序切分
-        n = len(X)
-        train_end = int(n * 0.7)
-        valid_end = int(n * 0.85)
+        unique_dates = sorted(pd.unique(date_series))
+        if len(unique_dates) < 10:
+            return {"error": "交易日数不足 10，无法切分训练/验证集"}
+        train_end_date = unique_dates[int(len(unique_dates) * 0.7)]
+        valid_end_date = unique_dates[int(len(unique_dates) * 0.85)]
 
-        X_train, y_train = X.iloc[:train_end], y.iloc[:train_end]
-        X_valid, y_valid = X.iloc[train_end:valid_end], y.iloc[train_end:valid_end]
+        train_mask = date_series <= train_end_date
+        valid_mask = (date_series > train_end_date) & (date_series <= valid_end_date)
+
+        X_train, y_train = X[train_mask], y[train_mask]
+        X_valid, y_valid = X[valid_mask], y[valid_mask]
+
+        if len(X_train) == 0 or len(X_valid) == 0:
+            return {"error": "训练集或验证集为空，请检查数据时间范围"}
 
         # 训练
         model = lgb.LGBMRegressor(

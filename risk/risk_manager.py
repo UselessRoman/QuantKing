@@ -23,6 +23,35 @@ import threading
 from datetime import datetime
 from typing import Optional, Tuple
 from config.settings import RISK_CONFIG
+from utils.logging import get_logger
+
+_logger = get_logger("risk_manager")
+
+
+def get_limit_ratio(code: str) -> float:
+    """根据股票代码返回涨跌停比例。
+
+    A 股各板块涨跌停规则：
+        主板（沪 60/深 00）、中小板（深 002）：±10%
+        创业板（300/301）：±20%（2020-08-24 注册制改革后）
+        科创板（688）：±20%
+        北交所（8/4/920）：±30%
+
+    参数:
+        code: 股票代码，可能带后缀（如 "688981.SH"）或纯数字
+
+    返回:
+        涨跌停比例，如 0.10 / 0.20 / 0.30
+    """
+    # 去掉交易所后缀，只保留数字部分
+    pure = code.upper().replace('.SH', '').replace('.SZ', '').replace('.BJ', '')
+    if pure.startswith('688'):                          # 科创板
+        return 0.20
+    if pure.startswith(('300', '301')):                 # 创业板
+        return 0.20
+    if pure.startswith(('8', '4', '920')):              # 北交所
+        return 0.30
+    return 0.10                                          # 主板/中小板
 
 
 class RiskManager:
@@ -101,11 +130,12 @@ class RiskManager:
         if self._meltdown:
             return False, f"熔断已触发: {self._meltdown_reason}"
 
-        # 1. 涨跌停检查
+        # 1. 涨跌停检查（按板块区分：主板10%/创业板科创板20%/北交所30%）
         if prev_close > 0:
-            limit_up = round(prev_close * 1.1, 2)
+            ratio = get_limit_ratio(code)
+            limit_up = round(prev_close * (1 + ratio), 2)
             if price >= limit_up:
-                return False, f"涨停价无法买入 (涨停价={limit_up})"
+                return False, f"涨停价无法买入 (涨停价={limit_up}, 限幅{ratio:.0%})"
 
         # 2. 单笔金额占比检查
         order_amount = price * volume
@@ -149,7 +179,7 @@ class RiskManager:
             code:         股票代码
             volume:       卖出数量
             positions:    当前持仓
-            prev_close:   前收盘价
+            prev_close:   前收盘价（用于跌停检查）
             buy_date:     买入日期（用于 T+1 检查）
             current_date: 当前日期
 
@@ -159,7 +189,9 @@ class RiskManager:
         if self._meltdown:
             return False, f"熔断已触发: {self._meltdown_reason}"
 
-        # 1. 跌停检查（由调用方在外部完成）
+        # 1. 跌停检查：check_sell 无 price 参数，跌停过滤由调用方通过
+        #    check_market(price, prev_close, is_buy=False, code=code) 完成。
+        #    executor 在下单前应调用 check_market 做跌停过滤。
 
         # 2. 持仓检查
         pos = positions.get(code)
@@ -176,7 +208,7 @@ class RiskManager:
         return True, "OK"
 
     def check_market(self, price: float, prev_close: float,
-                     is_buy: bool = True) -> Tuple[bool, str]:
+                     is_buy: bool = True, code: str = "") -> Tuple[bool, str]:
         """
         涨跌停市场规则检查
 
@@ -184,6 +216,8 @@ class RiskManager:
             price:      当前价格
             prev_close: 前收盘价
             is_buy:     True=买入检查, False=卖出检查
+            code:       股票代码（传入则按板块区分涨跌停比例，
+                        不传则默认主板 10%，保持向后兼容）
 
         返回:
             Tuple[bool, str]: (是否可交易, 原因)
@@ -191,12 +225,14 @@ class RiskManager:
         if prev_close <= 0:
             return True, "OK"
 
+        ratio = get_limit_ratio(code) if code else 0.10
+
         if is_buy:
-            limit = round(prev_close * 1.1, 2)
+            limit = round(prev_close * (1 + ratio), 2)
             if price >= limit:
                 return False, f"涨停 ({price} >= {limit})"
         else:
-            limit = round(prev_close * 0.9, 2)
+            limit = round(prev_close * (1 - ratio), 2)
             if price <= limit:
                 return False, f"跌停 ({price} <= {limit})"
 
@@ -272,7 +308,7 @@ class RiskManager:
         with self._lock:
             self._meltdown = False
             self._meltdown_reason = ""
-        print("熔断状态已手动重置")
+        _logger.warning("熔断状态已手动重置")
 
     def get_risk_summary(self) -> dict:
         """获取当前风险状态摘要"""

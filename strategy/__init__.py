@@ -12,28 +12,15 @@
     Signal           — 交易信号数据类
 
 策略注册:
-    通过 register_strategy 装饰器将策略注册到 STRATEGY_REGISTRY，
-    即可被回测引擎、策略执行器和 Web 接口发现与调用。
+    统一使用 strategy.registry 作为唯一注册中心，按命名空间组织：
+        REGISTRY["bt"]   — backtrader 回测策略
+        REGISTRY["live"] — 实盘 BaseStrategy 策略
+    通过 register_strategy 装饰器注册，即可被回测引擎、执行器和 Web 发现。
 """
 from .alpha_factors import FactorHandler
 from .qlib_model import QlibTrainer
 from .signal_generator import SignalGenerator
 from .base import BaseStrategy, Signal
 
-# 全局策略注册表：策略名 → 策略类
-STRATEGY_REGISTRY: dict[str, type] = {}
-
-
-def register_strategy(cls: type) -> type:
-    """
-    策略注册装饰器
-
-    自动将策略类注册到全局注册表中。策略类必须定义 name 属性。
-
-    使用示例:
-        @register_strategy
-        class MACrossStrategy(BaseStrategy):
-            name = "ma_cross"
-    """
-    STRATEGY_REGISTRY[cls.name] = cls
-    return cls
+# 统一从 registry 再导出，避免出现第二套 STRATEGY_REGISTRY
+from .registry import REGISTRY, register_strategy, get_strategy, list_strategies

@@ -58,6 +58,8 @@ FACTOR_META = {
 
 # ──── qlib 因子表达式定义 ────
 # 对应现有 research/factors.py 中的计算逻辑
+# 注意：QLIB_FACTOR_EXPRESSIONS / QLIB_FACTOR_NAMES 必须与 FACTOR_META 的 22 个
+# 因子完全对齐，否则 qlib 模式与 pandas 模式特征不一致，模型在两模式间切换会错位。
 QLIB_FACTOR_EXPRESSIONS = [
     # 动量类
     "Ref($close, -1) / Ref($close, -2) - 1",                              # ret_1d
@@ -72,6 +74,7 @@ QLIB_FACTOR_EXPRESSIONS = [
     # 量价类
     "Mean($volume, 5) / (Mean($volume, 20) + 1e-8)",                      # vol_ratio_5_20
     "Mean($volume, 5) / (Mean($volume, 60) + 1e-8)",                      # vol_ratio_5_60
+    "Mean($volume, 10) / (Mean($volume, 60) + 1e-8)",                      # volume_trend_10d
     # 均线偏离类
     "$close / Mean($close, 5) - 1",                                       # ma5_dev
     "$close / Mean($close, 10) - 1",                                      # ma10_dev
@@ -79,15 +82,39 @@ QLIB_FACTOR_EXPRESSIONS = [
     "$close / Mean($close, 60) - 1",                                      # ma60_dev
     # 技术指标类
     "RSI($close, 14)",                                                     # rsi_14
+    # MACD：qlib 无内置 MACD 算子，用 EMA 表达式实现
+    # DIF = EMA(close,12) - EMA(close,26)
+    "EMA($close, 12) - EMA($close, 26)",                                  # macd_dif
+    # Signal = EMA(DIF, 9)
+    "EMA(EMA($close, 12) - EMA($close, 26), 9)",                           # macd_signal
+    # Hist = (DIF - Signal) * 2  （与 pandas 版 _calc_macd 的 *2 保持一致）
+    "(EMA($close, 12) - EMA($close, 26) - EMA(EMA($close, 12) - EMA($close, 26), 9)) * 2",  # macd_hist
+    # 布林带位置：(close - MA20) / (Std20 * 2)，归一化到 [-1, 1] 区间
+    "($close - Mean($close, 20)) / (Std($close, 20) * 2 + 1e-8)",          # bb_position
+    # 反转类
+    "-(Ref($close, -1) / Ref($close, -4) - 1)",                            # reversal_3d
+    # 流动性类：5日均量相对前一日的环比变化率（与 pandas 版一致）
+    "Mean($volume, 5) / Ref(Mean($volume, 5), 1) - 1",                      # turnover_5d
 ]
 
+# 因子名清单——顺序与 QLIB_FACTOR_EXPRESSIONS 一一对应
 QLIB_FACTOR_NAMES = [
     "ret_1d", "ret_5d", "ret_10d", "ret_20d", "ret_60d",
     "std_5d", "std_20d", "hl_amplitude_20d",
-    "vol_ratio_5_20", "vol_ratio_5_60",
+    "vol_ratio_5_20", "vol_ratio_5_60", "volume_trend_10d",
     "ma5_dev", "ma10_dev", "ma20_dev", "ma60_dev",
     "rsi_14",
+    "macd_dif", "macd_signal", "macd_hist",
+    "bb_position", "reversal_3d", "turnover_5d",
 ]
+
+# 断言：两模式因子必须对齐，防止再次出现 22 vs 15 的不一致
+assert len(QLIB_FACTOR_NAMES) == len(QLIB_FACTOR_EXPRESSIONS), \
+    "QLIB_FACTOR_NAMES 与 QLIB_FACTOR_EXPRESSIONS 数量不一致"
+assert set(QLIB_FACTOR_NAMES) == set(FACTOR_META.keys()), \
+    f"qlib 因子名与 FACTOR_META 不一致: " \
+    f"仅 qlib 有 {set(QLIB_FACTOR_NAMES) - set(FACTOR_META.keys())}, " \
+    f"仅 meta 有 {set(FACTOR_META.keys()) - set(QLIB_FACTOR_NAMES)}"
 
 
 class FactorHandler:
@@ -231,49 +258,66 @@ class FactorHandler:
         # 合并为统一 DataFrame: (date, code) + OHLCV
         combined = pd.concat(all_frames, ignore_index=True)
 
-        # 向量化计算因子：按 code 分组，每组内按 date 排序后计算
-        def _compute_group(grp: pd.DataFrame) -> pd.DataFrame:
-            grp = grp.sort_values('date')
-            close = grp['close'].astype(float)
-            high = grp.get('high', close).astype(float)
-            low = grp.get('low', close).astype(float)
-            volume = grp['volume'].astype(float)
+        # 向量化计算因子：先按 (code, date) 排序，再用 groupby.transform 一次性
+        # 对所有股票计算滚动指标，避免旧版 groupby.apply 对每组调 Python 函数
+        # （pandas 2.x 会警告且对 5000 只 A 股逐组 apply 很慢）。
+        combined = combined.sort_values(['code', 'date']).reset_index(drop=True)
+        combined['close'] = combined['close'].astype(float)
+        combined['high'] = combined.get('high', combined['close']).astype(float)
+        combined['low'] = combined.get('low', combined['close']).astype(float)
+        combined['volume'] = combined['volume'].astype(float)
 
-            r = pd.DataFrame(index=grp.index)
-            r['date'] = grp['date'].values
-            r['code'] = grp['code'].values
+        g = combined.groupby('code', group_keys=False)
+        close = combined['close']
 
-            r['ret_1d'] = close.pct_change(1)
-            r['ret_5d'] = close.pct_change(5)
-            r['ret_10d'] = close.pct_change(10)
-            r['ret_20d'] = close.pct_change(20)
-            r['ret_60d'] = close.pct_change(60)
+        # 动量类：pct_change 在 transform 下按组计算
+        for w, name in [(1, 'ret_1d'), (5, 'ret_5d'), (10, 'ret_10d'),
+                        (20, 'ret_20d'), (60, 'ret_60d')]:
+            combined[name] = g['close'].transform(lambda s: s.pct_change(w))
 
-            daily_ret = close.pct_change()
-            r['std_5d'] = daily_ret.rolling(5).std()
-            r['std_20d'] = daily_ret.rolling(20).std()
-            r['hl_amplitude_20d'] = ((high - low) / (close + 1e-8)).rolling(20).mean()
+        # 波动率类
+        daily_ret = g['close'].transform(lambda s: s.pct_change())
+        combined['std_5d'] = daily_ret.rolling(5).std()
+        combined['std_20d'] = daily_ret.rolling(20).std()
+        # hl_ratio 先存为列，再用 transform 按组 rolling（避免 apply）
+        combined['_hl_ratio'] = (combined['high'] - combined['low']) / (close + 1e-8)
+        combined['hl_amplitude_20d'] = g['_hl_ratio'].transform(lambda s: s.rolling(20).mean())
+        combined = combined.drop(columns=['_hl_ratio'])
 
-            r['vol_ratio_5_20'] = volume.rolling(5).mean() / (volume.rolling(20).mean() + 1e-8)
-            r['vol_ratio_5_60'] = volume.rolling(5).mean() / (volume.rolling(60).mean() + 1e-8)
+        # 量价类
+        vol_ma5 = g['volume'].transform(lambda s: s.rolling(5).mean())
+        vol_ma20 = g['volume'].transform(lambda s: s.rolling(20).mean())
+        vol_ma60 = g['volume'].transform(lambda s: s.rolling(60).mean())
+        combined['vol_ratio_5_20'] = vol_ma5 / (vol_ma20 + 1e-8)
+        combined['vol_ratio_5_60'] = vol_ma5 / (vol_ma60 + 1e-8)
 
-            for w in [5, 10, 20, 60]:
-                r[f'ma{w}_dev'] = close / close.rolling(w).mean() - 1
+        # 均线偏离类
+        for w in [5, 10, 20, 60]:
+            ma = g['close'].transform(lambda s: s.rolling(w).mean())
+            combined[f'ma{w}_dev'] = close / ma - 1
 
-            r['rsi_14'] = self._calc_rsi(close, 14)
-            dif, dea, hist = self._calc_macd(close)
-            r['macd_dif'] = dif
-            r['macd_signal'] = dea
-            r['macd_hist'] = hist
-            r['bb_position'] = self._calc_bb_position(close)
-            r['reversal_3d'] = -close.pct_change(3)
-            r['turnover_5d'] = volume.rolling(5).mean() / (volume.rolling(5).mean().shift(1) + 1e-8)
+        # 技术指标类：RSI/MACD/BB 需整组 ewm 计算，用 transform 传整组 Series。
+        # MACD 三个分量分别 transform，避免 apply 返回 DataFrame 的多级索引问题。
+        combined['rsi_14'] = g['close'].transform(lambda s: self._calc_rsi(s, 14))
+        combined['macd_dif'] = g['close'].transform(
+            lambda s: self._calc_macd(s)[0])
+        combined['macd_signal'] = g['close'].transform(
+            lambda s: self._calc_macd(s)[1])
+        combined['macd_hist'] = g['close'].transform(
+            lambda s: self._calc_macd(s)[2])
+        combined['bb_position'] = g['close'].transform(self._calc_bb_position)
 
-            return r
+        # 反转 / 流动性
+        combined['reversal_3d'] = g['close'].transform(lambda s: -s.pct_change(3))
+        vol_ma5_shift1 = g['volume'].transform(lambda s: s.rolling(5).mean().shift(1))
+        combined['turnover_5d'] = vol_ma5 / (vol_ma5_shift1 + 1e-8)
 
-        # 使用 groupby 批量计算（比逐只循环快 5x+）
-        result = combined.groupby('code', group_keys=False).apply(_compute_group)
-        result = result.dropna()
+        # 训练标签：未来 5 日收益率（close[t+5]/close[t] - 1）。
+        # 用 shift(-5) 取未来值，对未来最后一期 NaN。标签列必须在训练时
+        # 从特征 X 中排除，否则会造成"用未来收益预测未来收益"的数据泄漏。
+        combined['forward_ret_5d'] = g['close'].transform(lambda s: s.shift(-5) / s - 1)
+
+        result = combined.dropna()
         result = result.set_index(['date', 'code'])
 
         self._factors = result

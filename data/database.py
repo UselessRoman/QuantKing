@@ -28,6 +28,7 @@ K线 Parquet 目录结构:
 """
 import sqlite3
 import sys
+import json
 from pathlib import Path
 import pandas as pd
 
@@ -131,6 +132,18 @@ class Database:
                 detail TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
+
+            CREATE TABLE IF NOT EXISTS backtest_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy TEXT NOT NULL,
+                params_json TEXT,
+                result_json TEXT,
+                initial_capital REAL,
+                codes_json TEXT,
+                start_date TEXT,
+                end_date TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
         """)
         self.conn.commit()
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -199,6 +212,122 @@ class Database:
         cols = [desc[0] for desc in cursor.description]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
+    # ──────────── backtest_history ────────────
+
+    def insert_backtest_history(self, entry: dict) -> int:
+        """插入一条回测历史记录，返回新记录 id。
+
+        Args:
+            entry: 包含 strategy/params/result/initial_capital/codes/
+                   start_date/end_date 的字典（result/params/codes 会被
+                   JSON 序列化存储）
+        """
+        sql = """INSERT INTO backtest_history
+                 (strategy, params_json, result_json, initial_capital,
+                  codes_json, start_date, end_date)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)"""
+        params = (
+            entry.get('strategy', ''),
+            json.dumps(entry.get('params', {}), ensure_ascii=False, default=str),
+            json.dumps(entry.get('performance', {}), ensure_ascii=False, default=str),
+            entry.get('initial_capital', 0),
+            json.dumps(entry.get('codes', []), ensure_ascii=False, default=str),
+            entry.get('start_date', ''),
+            entry.get('end_date', ''),
+        )
+        cursor = self.conn.execute(sql, params)
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_backtest_history(self, limit: int = 20) -> list[dict]:
+        """获取最近的回测历史记录（默认 20 条，按时间倒序）"""
+        import json as _json
+        cursor = self.conn.execute(
+            "SELECT * FROM backtest_history ORDER BY id DESC LIMIT ?",
+            (limit,)
+        )
+        cols = [desc[0] for desc in cursor.description]
+        rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+        # 反序列化 JSON 字段，补充前端期望的字段名
+        for row in rows:
+            try:
+                row['params'] = _json.loads(row.pop('params_json', '{}'))
+            except (ValueError, TypeError):
+                row['params'] = {}
+            try:
+                row['performance'] = _json.loads(row.pop('result_json', '{}'))
+            except (ValueError, TypeError):
+                row['performance'] = {}
+            try:
+                row['codes'] = _json.loads(row.pop('codes_json', '[]'))
+            except (ValueError, TypeError):
+                row['codes'] = []
+        return rows
+
+    # ════════════ Parquet 通用增量写入 ════════════
+
+    def _incremental_write_parquet(
+        self,
+        records: list[dict],
+        file_path: Path,
+        key_columns: list[str],
+        sort_column: str,
+        use_cache: bool = True,
+    ) -> tuple[int, pd.DataFrame]:
+        """通用 Parquet 增量写入：去重 → 合并 → 排序 → 写入。
+
+        Args:
+            records: 待写入的记录列表
+            file_path: Parquet 文件路径
+            key_columns: 去重键列（如 ['code', 'date']）
+            sort_column: 排序列
+            use_cache: 是否使用 ``_date_cache`` 内存缓存避免重复读取 Parquet
+
+        Returns:
+            (新增记录数, 最终 DataFrame)
+        """
+        if not records:
+            return 0, pd.DataFrame()
+
+        df = pd.DataFrame(records)
+        file_key = str(file_path)
+
+        def _key(r: dict) -> tuple:
+            return tuple(str(r[col]) for col in key_columns)
+
+        if file_path.exists():
+            if use_cache and file_key in self._date_cache:
+                seen = self._date_cache[file_key]
+            else:
+                existing = pd.read_parquet(file_path)
+                seen = {_key(r) for r in existing.to_dict('records')}
+                if use_cache:
+                    self._date_cache[file_key] = seen
+
+            new_records = [r for r in records if _key(r) not in seen]
+            if new_records:
+                new_df = pd.DataFrame(new_records)
+                merged = pd.concat([pd.read_parquet(file_path), new_df], ignore_index=True)
+                merged = merged.drop_duplicates(subset=key_columns, keep='last')
+                merged.sort_values(sort_column, inplace=True)
+                merged.to_parquet(file_path, index=False)
+
+                if use_cache:
+                    for r in new_records:
+                        self._date_cache[file_key].add(_key(r))
+
+                return len(new_records), merged
+            else:
+                return 0, pd.read_parquet(file_path)
+        else:
+            df.sort_values(sort_column, inplace=True)
+            df.to_parquet(file_path, index=False)
+
+            if use_cache:
+                self._date_cache[file_key] = {_key(r) for r in records}
+
+            return len(records), df
+
     # ════════════ Parquet K线操作 ════════════
 
     def _kline_path(self, code: str, period: str) -> Path:
@@ -207,45 +336,19 @@ class Database:
         return dir_path / f"{code}.parquet"
 
     def insert_daily_kline(self, records: list[dict], period: str = '1d') -> int:
-        """
-        写入日K线到 Parquet 文件（增量去重优化版）
-
-        使用内存日期缓存避免每次全量读取 Parquet。
-        首次写入时从 Parquet 加载日期到缓存；后续增量写入直接查缓存。
-        """
+        """写入日K线到 Parquet 文件（增量去重优化版）。"""
         if not records:
             return 0
-        df = pd.DataFrame(records)
         code = records[0]['code']
         file_path = self._kline_path(code, period)
-        file_key = str(file_path)
 
-        if file_path.exists():
-            # 从缓存获取已有日期集合，缓存未命中时从 Parquet 加载
-            if file_key not in self._date_cache:
-                existing = pd.read_parquet(file_path)
-                self._date_cache[file_key] = {(r['code'], str(r['date']))
-                                              for r in existing.to_dict('records')}
-            seen = self._date_cache[file_key]
-            new_records = [r for r in records if (r['code'], str(r['date'])) not in seen]
-            if new_records:
-                new_df = pd.DataFrame(new_records)
-                merged = pd.concat([pd.read_parquet(file_path), new_df], ignore_index=True)
-                merged = merged.drop_duplicates(subset=['code', 'date'], keep='last')
-                merged.sort_values('date', inplace=True)
-                merged.to_parquet(file_path, index=False)
-                # 更新缓存
-                for r in new_records:
-                    self._date_cache[file_key].add((r['code'], str(r['date'])))
-                count = len(new_records)
-            else:
-                count = 0
-        else:
-            df.sort_values('date', inplace=True)
-            df.to_parquet(file_path, index=False)
-            # 初始化缓存
-            self._date_cache[file_key] = {(r['code'], str(r['date'])) for r in records}
-            count = len(records)
+        count, _ = self._incremental_write_parquet(
+            records=records,
+            file_path=file_path,
+            key_columns=['code', 'date'],
+            sort_column='date',
+            use_cache=True,
+        )
 
         self._update_kline_index(code, period, str(file_path), count)
         return count
@@ -309,28 +412,19 @@ class Database:
         return self.financial_dir / f"{code}.parquet"
 
     def insert_financial(self, records: list[dict]) -> int:
+        """写入财务数据到 Parquet 文件（增量去重）。"""
         if not records:
             return 0
         code = records[0]['code']
-        df = pd.DataFrame(records)
         file_path = self._financial_path(code)
 
-        if file_path.exists():
-            existing = pd.read_parquet(file_path)
-            seen = {(r['code'], r['report_date']) for r in existing.to_dict('records')}
-            new_records = [r for r in records if (r['code'], r['report_date']) not in seen]
-            if new_records:
-                merged = pd.concat([existing, pd.DataFrame(new_records)], ignore_index=True)
-                merged = merged.drop_duplicates(subset=['code', 'report_date'], keep='last')
-                merged.sort_values('report_date', inplace=True)
-                merged.to_parquet(file_path, index=False)
-                count = len(new_records)
-            else:
-                count = 0
-        else:
-            df.sort_values('report_date', inplace=True)
-            df.to_parquet(file_path, index=False)
-            count = len(records)
+        count, df = self._incremental_write_parquet(
+            records=records,
+            file_path=file_path,
+            key_columns=['code', 'report_date'],
+            sort_column='report_date',
+            use_cache=False,
+        )
 
         last = df['report_date'].iloc[-1] if len(df) > 0 else ''
         self.conn.execute(

@@ -69,6 +69,42 @@ class TestRiskCheckBuy:
         assert not ok
         assert "涨停" in reason
 
+    def test_buy_limit_up_chinext_20_percent(self):
+        """创业板涨跌停为 20%：10元前收，12元未涨停可买，12元=涨停被拒"""
+        # 11.9 元 < 12.0 涨停价，应通过（cash 调大避免占比限制干扰）
+        ok, reason = self.rm.check_buy(
+            code="300001.SZ", price=11.9, volume=1000,
+            cash=200000, positions={}, prev_close=10.0,
+        )
+        assert ok, f"创业板 11.9 元应可买（涨停价12.0）: {reason}"
+        # 12.0 元 = 涨停价，应拒绝
+        ok, reason = self.rm.check_buy(
+            code="300001.SZ", price=12.0, volume=1000,
+            cash=200000, positions={}, prev_close=10.0,
+        )
+        assert not ok
+        assert "涨停" in reason
+        assert "20%" in reason
+
+    def test_buy_limit_up_star_20_percent(self):
+        """科创板（688）涨跌停为 20%"""
+        ok, reason = self.rm.check_buy(
+            code="688981.SH", price=12.0, volume=1000,
+            cash=50000, positions={}, prev_close=10.0,
+        )
+        assert not ok
+        assert "涨停" in reason
+
+    def test_buy_limit_up_bse_30_percent(self):
+        """北交所涨跌停为 30%：10元前收，13元=涨停被拒"""
+        ok, reason = self.rm.check_buy(
+            code="830799.BJ", price=13.0, volume=1000,
+            cash=50000, positions={}, prev_close=10.0,
+        )
+        assert not ok
+        assert "涨停" in reason
+        assert "30%" in reason
+
     def test_buy_order_ratio_exceeded(self):
         """单笔金额占比超限"""
         ok, reason = self.rm.check_buy(
@@ -194,6 +230,29 @@ class TestRiskCheckMarket:
         rm = RiskManager()
         ok, reason = rm.check_market(10.5, 10.0, is_buy=True)
         assert ok
+
+    def test_market_chinext_20_percent(self):
+        """创业板按 20% 涨跌停"""
+        rm = RiskManager()
+        # 11.9 元 < 12.0 涨停价，可买
+        ok, _ = rm.check_market(11.9, 10.0, is_buy=True, code="300001.SZ")
+        assert ok
+        # 12.0 元 = 涨停价，不可买
+        ok, reason = rm.check_market(12.0, 10.0, is_buy=True, code="300001.SZ")
+        assert not ok
+        assert "涨停" in reason
+        # 8.0 元 = 跌停价（10*0.8），不可卖
+        ok, reason = rm.check_market(8.0, 10.0, is_buy=False, code="300001.SZ")
+        assert not ok
+        assert "跌停" in reason
+
+    def test_market_bse_30_percent(self):
+        """北交所按 30% 涨跌停"""
+        rm = RiskManager()
+        # 13.0 元 = 涨停价（10*1.3），不可买
+        ok, reason = rm.check_market(13.0, 10.0, is_buy=True, code="830799.BJ")
+        assert not ok
+        assert "涨停" in reason
 
 
 class TestRiskSummary:

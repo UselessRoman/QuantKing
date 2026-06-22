@@ -55,6 +55,9 @@ class BacktestRunner:
         self.cerebro.broker.setcash(initial_capital)
         self.cerebro.broker.setcommission(commission=commission_rate)
         self.cerebro.broker.addcommissioninfo(AShareCommission())
+        # 滑点：万分之一（0.01%），模拟成交价劣化，避免回测过于乐观。
+        # 旧版无滑点，回测收益偏乐观；加_perc按比例滑点更贴近实盘。
+        self.cerebro.broker.set_slippage_perc(perc=0.0001)
 
         # 添加默认分析器
         #   TimeReturn / Transactions 是 BacktestAnalyzer 的数据来源（必须挂载），

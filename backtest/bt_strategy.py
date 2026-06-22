@@ -244,6 +244,11 @@ class QlibSignalStrategy(bt.Strategy):
         self._sorted_signal_dates: list[str] = sorted(self._signals.keys())
         self._bar_count = 0
         self._buy_date: dict[str, str] = {}  # {code: buy_date} T+1 记录
+        # 待确认买单: {order_ref: code}。
+        # backtrader 的 buy() 是异步的，订单要等 notify_order 才知道是否成交。
+        # 只有成交后才记 _buy_date；Margin/Rejected 的单子不能记，否则会
+        # 错误触发 T+1 限制，并掩盖"资金不足未买"的事实。
+        self._pending_buys: dict[int, str] = {}
 
     def set_signals(self, signals: dict):
         """
@@ -266,14 +271,20 @@ class QlibSignalStrategy(bt.Strategy):
         return self._bar_count % self.params.rebalance_freq == 0
 
     def _get_target_codes(self, current_date: str) -> list[str]:
-        """取距离当前日期最近的信号日的选股列表"""
+        """取当前日期及之前最近的信号日的选股列表。
+
+        旧实现用 abs(int(d)-int(current_date)) 选最近信号日，会选到未来
+        日期的信号（前视偏差）。这里改为只取 <= 当前日期的信号中最近的，
+        没有则返回空（即建仓前不动）。
+        """
         if not self._sorted_signal_dates:
             return []
-        # 信号日为 YYYYMMDD 字符串，可按整数大小比较
-        closest_date = min(
-            self._sorted_signal_dates,
-            key=lambda d: abs(int(d) - int(current_date)),
-        )
+        cur = int(current_date)
+        # _sorted_signal_dates 已升序，取 <= cur 的最后一个
+        past = [d for d in self._sorted_signal_dates if int(d) <= cur]
+        if not past:
+            return []
+        closest_date = past[-1]
         return self._signals.get(closest_date, [])
 
     def next(self):
@@ -290,9 +301,13 @@ class QlibSignalStrategy(bt.Strategy):
         if not target_codes:
             return
 
-        # 计算等权资金
+        # 计算等权资金：留出 buffer 给佣金/滑点/整百股取整上溢。
+        # 旧实现 per_stock_value = total_value / top_k 在 top_k 较小或股价
+        # 较高时，取整百股后买入金额会顶满甚至超过可用资金，backtrader 判定
+        # Margin 拒单，导致策略静默不交易。0.98 的安全系数覆盖了佣金(万2.5)
+        # + 滑点 + 取整上溢的余量。
         total_value = self.broker.getvalue()
-        per_stock_value = total_value / self.params.top_k
+        per_stock_value = total_value * 0.98 / self.params.top_k
 
         # 卖出不在目标池的持仓
         for data in self.datas:
@@ -312,26 +327,47 @@ class QlibSignalStrategy(bt.Strategy):
             pos = self.getposition(data)
             if pos.size == 0:
                 price = data.close[0]
-                size = int(per_stock_value / price / 100) * 100
+                # 按成交价的 1.01 倍估算 size，防止下一根开盘跳空导致 Margin
+                size = int(per_stock_value / (price * 1.01) / 100) * 100
                 if size >= 100:
-                    self.buy(data=data, size=size)
-                    self._buy_date[code] = current_date
+                    order = self.buy(data=data, size=size)
+                    self._pending_buys[order.ref] = code
 
     def notify_order(self, order):
-        # 订单完成后再无额外处理；保留钩子便于子类扩展
-        pass
+        """订单状态回调：成交才记 T+1 日期，失败单子清理掉。
+
+        backtrader 的 buy() 返回时订单尚未撮合，资金是否足够要等
+        notify_order 的 Margin/Rejected 状态才知道。旧代码在 buy() 之后
+        立即记 _buy_date，会掩盖资金不足未买的事实，并误触发 T+1 限制。
+        """
+        if order.status == order.Completed:
+            code = self._pending_buys.pop(order.ref, None)
+            if code is not None:
+                current_date = self.datas[0].datetime.date(0).strftime('%Y%m%d')
+                self._buy_date[code] = current_date
+        elif order.status in (order.Margin, order.Rejected, order.Canceled):
+            self._pending_buys.pop(order.ref, None)
 
 
 # ─── 策略注册表 ───
+# 统一使用 strategy.registry.REGISTRY["bt"] 作为唯一真相源，消除项目里
+# 三套注册表（bt_strategy / strategy.__init__ / strategy.registry）的不一致。
+# STRATEGY_REGISTRY 保留为 REGISTRY["bt"] 的引用，向后兼容现有 import。
+from strategy.registry import REGISTRY as _REGISTRY
 
-STRATEGY_REGISTRY = {
+# 注册内置 backtrader 策略到 'bt' 命名空间
+_REGISTRY["bt"].update({
     'ma_cross': MACrossStrategy,
     'macd': MACDStrategy,
     'rsi': RSIStrategy,
     'bollinger_bands': BollingerBandsStrategy,
     'turtle': TurtleStrategy,
     'qlib_signal': QlibSignalStrategy,
-}
+})
+
+# 向后兼容：现有代码 `from backtest.bt_strategy import STRATEGY_REGISTRY`
+# 指向同一字典对象，后续 register_strategy 装饰器注册的策略也会自动可见。
+STRATEGY_REGISTRY = _REGISTRY["bt"]
 
 
 def get_strategy(name: str) -> type:

@@ -41,6 +41,13 @@ from data.database import Database
 from strategy.base import BaseStrategy, Signal
 from trading.xt_trader import TraderManager
 from risk.risk_manager import RiskManager
+from utils.logging import get_logger
+
+_logger = get_logger("executor")
+
+# 模块级执行锁：保护 run_once 整体，防止 Web 查询 monitor 与实盘下单并发
+# 撞上 xtquant 非线程安全的回调。同一时刻只允许一个 run_once 执行。
+_EXEC_LOCK = threading.Lock()
 
 
 def _extract_single_kline(kline: pd.DataFrame, code: str) -> pd.DataFrame:
@@ -153,27 +160,37 @@ class StrategyExecutor:
 
         返回:
             list[dict]: 已执行的信号记录列表
+
+        线程安全:
+            整个方法持有模块级 _EXEC_LOCK，防止 Web 查询 monitor 与实盘下单
+            并发撞上 xtquant 非线程安全的回调。同一时刻只有一个 run_once 执行。
         """
+        with _EXEC_LOCK:
+            return self._run_once_locked()
+
+    def _run_once_locked(self) -> list[dict]:
+        """run_once 的实际实现，已在 _EXEC_LOCK 保护下"""
         if not self._stock_list:
             # 按成交额排序取前 50 只作为默认股票池（比简单按代码排序更有意义）
             all_stocks = self.provider.get_stock_list()
             self._stock_list = all_stocks[:50]
-            print(f"使用默认股票池（前50只）: {len(self._stock_list)}")
+            _logger.info("使用默认股票池（前50只）: %d", len(self._stock_list))
 
         signals_executed: list[dict] = []
 
         if not self.trader.is_connected(self.account_id):
-            print(f"账号 {self.account_id} 未连接，跳过执行")
+            _logger.warning("账号 %s 未连接，跳过执行", self.account_id)
             return signals_executed
 
         if self.risk_manager.is_meltdown():
-            print(f"风控熔断已触发，跳过执行: {self.risk_manager.get_risk_summary()['meltdown_reason']}")
+            _logger.warning("风控熔断已触发，跳过执行: %s",
+                            self.risk_manager.get_risk_summary()['meltdown_reason'])
             return signals_executed
 
         # 获取当前资产和持仓（一次查询，复用）
         asset = self.trader.query_asset(self.account_id)
         if asset is None:
-            print("无法获取账户资产，跳过执行")
+            _logger.warning("无法获取账户资产，跳过执行")
             return signals_executed
 
         positions_list = self.trader.query_positions(self.account_id)
@@ -191,16 +208,16 @@ class StrategyExecutor:
         # 检查熔断
         ok, reason = self.risk_manager.check_daily_loss(current_equity)
         if not ok:
-            print(f"日亏损熔断: {reason}")
+            _logger.warning("日亏损熔断: %s", reason)
             return signals_executed
 
         ok, reason = self.risk_manager.check_drawdown(self._peak_equity, current_equity)
         if not ok:
-            print(f"回撤熔断: {reason}")
+            _logger.warning("回撤熔断: %s", reason)
             return signals_executed
 
         today_str = datetime.now().strftime('%Y%m%d')
-        print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始运行策略...")
+        _logger.info("开始运行策略...")
 
         for code in self._stock_list:
             try:
@@ -234,14 +251,18 @@ class StrategyExecutor:
                             prev_close=prev_close,
                         )
                         if not ok:
-                            print(f"[风控拒绝-买入] {code}: {reason}")
+                            _logger.warning("[风控拒绝-买入] %s: %s", code, reason)
                             continue
                         success = self._do_buy(code, sig.price, sig.volume)
                         if success:
                             self._buy_dates[code] = today_str
-                            positions_dict[code] = positions_dict.get(code, {'volume': 0, 'can_use_volume': 0})
-                            positions_dict[code]['volume'] = positions_dict[code].get('volume', 0) + sig.volume
-                            current_cash -= sig.price * sig.volume * 1.00025
+                            # 下单成功后重新查询真实资产与持仓，不本地推算。
+                            # 旧代码 current_cash -= price*vol*1.00025 是估算，
+                            # 多笔循环时 positions_dict 只加不减，风控的持仓上限/
+                            # 资金占比会基于陈旧值，可能超买。
+                            new_cash, new_pos = self._refresh_account_state()
+                            if new_cash is not None:
+                                current_cash, positions_dict = new_cash, new_pos
 
                     elif sig.action == 'SELL':
                         buy_date = self._buy_dates.get(code, '')
@@ -253,14 +274,15 @@ class StrategyExecutor:
                             current_date=today_str,
                         )
                         if not ok:
-                            print(f"[风控拒绝-卖出] {code}: {reason}")
+                            _logger.warning("[风控拒绝-卖出] %s: %s", code, reason)
                             continue
                         success = self._do_sell(code, sig.price, sig.volume)
                         if success:
                             self._buy_dates.pop(code, None)
-                            if code in positions_dict:
-                                positions_dict[code]['volume'] = positions_dict[code].get('volume', 0) - sig.volume
-                            current_cash += sig.price * sig.volume * (1 - 0.00125)
+                            # 同理：卖出后重查真实状态
+                            new_cash, new_pos = self._refresh_account_state()
+                            if new_cash is not None:
+                                current_cash, positions_dict = new_cash, new_pos
 
                     else:
                         continue
@@ -284,9 +306,9 @@ class StrategyExecutor:
                         signals_executed.append(record)
 
             except Exception as e:
-                print(f"处理 {code} 异常: {e}")
+                _logger.error("处理 %s 异常: %s", code, e, exc_info=True)
 
-        print(f"策略执行完成，共 {len(signals_executed)} 个信号被执行")
+        _logger.info("策略执行完成，共 %d 个信号被执行", len(signals_executed))
         return signals_executed
 
     def _do_buy(self, code: str, price: float, volume: int) -> bool:
@@ -304,6 +326,26 @@ class StrategyExecutor:
             strategy_name=self.strategy_name,
             remark=f"{self.strategy_name}-{datetime.now().strftime('%H%M')}",
         )
+
+    def _refresh_account_state(self) -> tuple[float, dict[str, dict]]:
+        """下单后重新查询真实账户资产与持仓。
+
+        替代旧的本地推算（current_cash ±= price*vol*费率），避免多笔循环中
+        positions_dict 只加不减、风控基于陈旧值误判。返回 (可用资金, 持仓字典)。
+        查询失败时返回原值由调用方继续使用（保守不阻断）。
+        """
+        try:
+            asset = self.trader.query_asset(self.account_id)
+            positions_list = self.trader.query_positions(self.account_id)
+            cash = asset.get('available_cash', 0) if asset else 0
+            positions = {
+                p['stock_code']: {'volume': p['volume'], 'can_use_volume': p['can_use_volume']}
+                for p in (positions_list or [])
+            }
+            return cash, positions
+        except Exception as e:
+            _logger.warning("重查账户状态失败，沿用旧值: %s", e)
+            return None, None
 
     def run_loop(self, interval_seconds: int = 60) -> None:
         """
@@ -323,15 +365,21 @@ class StrategyExecutor:
         self._running = True
 
         def _loop() -> None:
-            print(f"策略执行器启动，账号={self.account_id}，间隔={interval_seconds}秒")
+            from utils.trading_hours import is_trading_time
+            _logger.info("策略执行器启动，账号=%s，间隔=%d秒", self.account_id, interval_seconds)
             while self._running:
                 try:
-                    self.run_once()
+                    # 仅在 A 股交易时段内执行策略，避免非交易时段空转下单。
+                    # 非交易时段跳过 run_once，仅按间隔重检。
+                    if is_trading_time():
+                        self.run_once()
+                    else:
+                        _logger.debug("非交易时段，跳过执行")
                 except Exception as e:
-                    print(f"策略循环执行异常: {e}")
+                    _logger.error("策略循环执行异常: %s", e, exc_info=True)
                 if self._running:
                     time.sleep(interval_seconds)
-            print("策略执行器已停止")
+            _logger.info("策略执行器已停止")
 
         self._thread = threading.Thread(target=_loop, daemon=True)
         self._thread.start()

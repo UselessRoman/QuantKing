@@ -1,0 +1,18 @@
+# 风险控制参数配置
+# 修改后通过 POST /api/risk/config 热更新或重启应用生效。
+# RiskManager 启动时优先读取本文件，文件缺失则回退到 settings.py 的默认值。
+
+# 单只股票最大持仓（股）
+max_position_per_stock: 100000
+
+# 单笔订单最大资金占比（0.2 = 20%）
+max_single_order_ratio: 0.2
+
+# 日最大亏损比例（触发熔断，0.05 = 5%）
+max_daily_loss_ratio: 0.05
+
+# 最大回撤比例（触发熔断，0.20 = 20%）
+max_drawdown_ratio: 0.20
+
+# 最大持仓股票数
+max_holdings_count: 50

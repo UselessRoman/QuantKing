@@ -34,6 +34,9 @@ XTquant API 参考:
 """
 from dataclasses import dataclass, field
 from config.settings import ACCOUNTS
+from utils.logging import get_logger
+
+_logger = get_logger("xt_trader")
 
 try:
     from xtquant.xttrader import XtQuantTrader, XtQuantTraderCallback
@@ -132,7 +135,7 @@ class TraderManager:
             bool: 连接成功返回 True
         """
         if not _XT_TRADER_AVAILABLE:
-            print("xtquant 交易模块未安装，无法初始化交易功能")
+            _logger.error("xtquant 交易模块未安装，无法初始化交易功能")
             self._connected[config.id] = False
             return False
 
@@ -142,18 +145,20 @@ class TraderManager:
 
             class _Callback(XtQuantTraderCallback):
                 def on_disconnected(self):
-                    print(f"[{config.label}] 交易连接断开")
+                    _logger.warning("[%s] 交易连接断开", config.label)
 
                 def on_stock_order(self, order):
-                    print(f"[{config.label}] 委托回报: {order.stock_code} "
-                          f"{order.order_volume}股 订单号={order.order_id}")
+                    _logger.info("[%s] 委托回报: %s %s股 订单号=%s",
+                                 config.label, order.stock_code,
+                                 order.order_volume, order.order_id)
 
                 def on_stock_trade(self, trade):
-                    print(f"[{config.label}] 成交回报: {trade.stock_code} "
-                          f"{trade.traded_volume}股@{trade.traded_price}")
+                    _logger.info("[%s] 成交回报: %s %s股@%s",
+                                 config.label, trade.stock_code,
+                                 trade.traded_volume, trade.traded_price)
 
                 def on_account_status(self, status):
-                    print(f"[{config.label}] 账号状态变更: {status}")
+                    _logger.info("[%s] 账号状态变更: %s", config.label, status)
 
             import time
             callback = _Callback()
@@ -164,36 +169,36 @@ class TraderManager:
             connect_result = trader.connect()
 
             if connect_result != 0:
-                print(f"[{config.label}] 连接失败，返回码: {connect_result}")
+                _logger.error("[%s] 连接失败，返回码: %s", config.label, connect_result)
                 self._connected[config.id] = False
                 return False
 
-            import time
             time.sleep(1)
 
             account = StockAccount(config.account_id, config.account_type)
             subscribe_result = trader.subscribe(account)
 
             if subscribe_result != 0:
-                print(f"[{config.label}] 订阅账号失败（返回码 {subscribe_result}），尝试重试...")
+                _logger.warning("[%s] 订阅账号失败（返回码 %s），尝试重试...",
+                                config.label, subscribe_result)
                 time.sleep(2)
                 subscribe_result = trader.subscribe(account)
 
             if subscribe_result != 0:
-                print(f"[{config.label}] 订阅账号仍然失败（返回码 {subscribe_result}）")
-                print(f"  账号ID: {config.account_id}，类型: {config.account_type}")
-                print(f"  请确认 QMT 交易端已登录该资金账号")
+                _logger.error("[%s] 订阅账号仍然失败（返回码 %s）", config.label, subscribe_result)
+                _logger.error("  账号ID: %s，类型: %s", config.account_id, config.account_type)
+                _logger.error("  请确认 QMT 交易端已登录该资金账号")
                 self._connected[config.id] = False
                 return False
 
             self._traders[config.id] = trader
             self._callbacks[config.id] = callback
             self._connected[config.id] = True
-            print(f"[{config.label}] 连接成功")
+            _logger.info("[%s] 连接成功", config.label)
             return True
 
         except Exception as e:
-            print(f"[{config.label}] 连接异常: {e}")
+            _logger.error("[%s] 连接异常: %s", config.label, e, exc_info=True)
             self._connected[config.id] = False
             return False
 
@@ -214,7 +219,7 @@ class TraderManager:
             bool: 下单成功返回 True，失败或未连接返回 False
         """
         if account_id not in self._traders or not self._connected.get(account_id):
-            print(f"账号 {account_id} 未连接")
+            _logger.warning("账号 %s 未连接", account_id)
             return False
 
         if not _XT_TRADER_AVAILABLE:
@@ -229,14 +234,15 @@ class TraderManager:
                                           xtconstant.LATEST_PRICE_FIFTH, price,
                                           strategy_name=strategy_name, order_remark=remark)
             if order_id == -1:
-                print(f"[{config.label}] 下单失败: {code} {volume}股 @ {price}")
+                _logger.error("[%s] 下单失败: %s %s股 @ %s", config.label, code, volume, price)
                 return False
 
-            print(f"[{config.label}] 下单成功: {code} {volume}股 @ {price}, 订单号={order_id}")
+            _logger.info("[%s] 下单成功: %s %s股 @ %s, 订单号=%s",
+                         config.label, code, volume, price, order_id)
             return True
 
         except Exception as e:
-            print(f"[{account_id}] 买入异常: {e}")
+            _logger.error("[%s] 买入异常: %s", account_id, e, exc_info=True)
             return False
 
     def sell(self, account_id: str, code: str, price: float, volume: int,
@@ -256,7 +262,7 @@ class TraderManager:
             bool: 下单成功返回 True
         """
         if account_id not in self._traders or not self._connected.get(account_id):
-            print(f"账号 {account_id} 未连接")
+            _logger.warning("账号 %s 未连接", account_id)
             return False
 
         if not _XT_TRADER_AVAILABLE:
@@ -271,14 +277,15 @@ class TraderManager:
                                           xtconstant.LATEST_PRICE_FIFTH, price,
                                           strategy_name=strategy_name, order_remark=remark)
             if order_id == -1:
-                print(f"[{config.label}] 下单失败: {code} {volume}股 @ {price}")
+                _logger.error("[%s] 下单失败: %s %s股 @ %s", config.label, code, volume, price)
                 return False
 
-            print(f"[{config.label}] 下单成功: {code} {volume}股 @ {price}, 订单号={order_id}")
+            _logger.info("[%s] 下单成功: %s %s股 @ %s, 订单号=%s",
+                         config.label, code, volume, price, order_id)
             return True
 
         except Exception as e:
-            print(f"[{account_id}] 卖出异常: {e}")
+            _logger.error("[%s] 卖出异常: %s", account_id, e, exc_info=True)
             return False
 
     def cancel_order(self, account_id: str, order_id: int) -> bool:
@@ -307,7 +314,7 @@ class TraderManager:
             result = trader.cancel_order(order_id, account)
             return result == 0
         except Exception as e:
-            print(f"[{account_id}] 撤单异常: {e}")
+            _logger.error("[%s] 撤单异常: %s", account_id, e, exc_info=True)
             return False
 
     def query_positions(self, account_id: str) -> list[dict]:
@@ -344,7 +351,7 @@ class TraderManager:
                 })
             return result
         except Exception as e:
-            print(f"[{account_id}] 查询持仓异常: {e}")
+            _logger.error("[%s] 查询持仓异常: %s", account_id, e, exc_info=True)
             return []
 
     def query_orders(self, account_id: str) -> list[dict]:
@@ -383,7 +390,7 @@ class TraderManager:
                 })
             return result
         except Exception as e:
-            print(f"[{account_id}] 查询委托异常: {e}")
+            _logger.error("[%s] 查询委托异常: %s", account_id, e, exc_info=True)
             return []
 
     def query_trades(self, account_id: str) -> list[dict]:
@@ -420,7 +427,7 @@ class TraderManager:
                 })
             return result
         except Exception as e:
-            print(f"[{account_id}] 查询成交异常: {e}")
+            _logger.error("[%s] 查询成交异常: %s", account_id, e, exc_info=True)
             return []
 
     def query_asset(self, account_id: str) -> dict | None:
@@ -454,7 +461,7 @@ class TraderManager:
                 'market_value': asset.market_value,
             }
         except Exception as e:
-            print(f"[{account_id}] 查询资产异常: {e}")
+            _logger.error("[%s] 查询资产异常: %s", account_id, e, exc_info=True)
             return None
 
     def is_connected(self, account_id: str) -> bool:
@@ -471,7 +478,7 @@ class TraderManager:
             try:
                 trader.stop()
             except Exception as e:
-                print(f"[{aid}] 断开连接异常: {e}")
+                _logger.error("[%s] 断开连接异常: %s", aid, e, exc_info=True)
         self._traders.clear()
         self._callbacks.clear()
         self._connected.clear()

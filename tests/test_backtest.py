@@ -60,22 +60,28 @@ class TestBacktestBroker:
     """A股佣金方案测试（需要 backtrader）"""
 
     def test_commission_buy(self):
+        """买入：佣金最低5元 + 过户费万0.1"""
         from backtest.bt_broker import AShareCommission
         comm = AShareCommission()
         cost = comm._getcommission(1000, 10.0, False)
-        assert cost == 5.0
+        # 佣金 max(10000*0.00025, 5)=5，过户费 10000*0.00001=0.1
+        assert cost == 5.1
 
     def test_commission_sell_with_stamp(self):
+        """卖出：佣金5 + 印花税10 + 过户费0.1"""
         from backtest.bt_broker import AShareCommission
         comm = AShareCommission()
         cost = comm._getcommission(-1000, 10.0, False)
-        assert cost == 15.0
+        # 佣金5 + 印花 10000*0.001=10 + 过户 0.1 = 15.1
+        assert cost == 15.1
 
     def test_commission_min(self):
+        """小额交易触发最低佣金 + 过户费"""
         from backtest.bt_broker import AShareCommission
         comm = AShareCommission()
         cost = comm._getcommission(100, 5.0, False)
-        assert cost == 5.0
+        # 佣金 max(500*0.00025, 5)=5，过户费 500*0.00001=0.005
+        assert cost == 5.005
 
 
 @pytest.mark.skipif(not _BT_AVAILABLE, reason="backtrader 未安装")

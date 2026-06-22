@@ -47,7 +47,12 @@ def list_strategies():
     for name, cls in STRATEGY_REGISTRY.items():
         params_info = {}
         if hasattr(cls, 'params') and hasattr(cls.params, '_getpairs'):
-            for p_name, p_val in cls.params._getpairs():
+            # _getpairs() 在 backtrader 1.9.78+ 返回 OrderedDict，需用 .items()
+            # 遍历；旧版返回 list[tuple]，.items() 对 OrderedDict 适用，
+            # 对 tuple list 不适用，故做兼容处理。
+            pairs = cls.params._getpairs()
+            items = pairs.items() if hasattr(pairs, 'items') else pairs
+            for p_name, p_val in items:
                 if p_name not in ('stocklike', 'commtype', 'percabs'):
                     params_info[p_name] = str(p_val)
 

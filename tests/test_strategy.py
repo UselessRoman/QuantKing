@@ -4,7 +4,7 @@ import pytest
 import pandas as pd
 import numpy as np
 from strategy.signal_generator import SignalGenerator
-from strategy.alpha_factors import FACTOR_META, QLIB_FACTOR_NAMES
+from strategy.alpha_factors import FACTOR_META, QLIB_FACTOR_NAMES, QLIB_FACTOR_EXPRESSIONS
 
 
 class TestSignalGenerator:
@@ -69,7 +69,11 @@ class TestFactorMeta:
         assert '技术指标' in categories
 
     def test_qlib_factor_expressions(self):
-        assert len(QLIB_FACTOR_NAMES) == 15  # 15个 qlib 因子表达式
+        # qlib 因子必须与 pandas 模式 FACTOR_META 的 22 个完全对齐，
+        # 否则两模式特征不一致，模型切换会错位。
+        assert len(QLIB_FACTOR_NAMES) == 22
+        assert len(QLIB_FACTOR_EXPRESSIONS) == 22
+        assert set(QLIB_FACTOR_NAMES) == set(FACTOR_META.keys())
 
 
 if __name__ == '__main__':

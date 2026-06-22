@@ -265,8 +265,8 @@ class TestQlibSignalInjection:
 
         # 挂载 analyzer 用于验证交易发生
         cerebro.addanalyzer(bt.analyzers.Transactions, _name='transactions')
-        cerebro.run()
-
+        # 注意：cerebro.run() 只能调用一次。旧测试调了两次，第二次 run 会在
+        # 已结束的 broker 状态上继续，行为未定义。
         strat = cerebro.run()[0]
         txns = strat.analyzers.transactions.get_analysis()
         n_deals = sum(len(v) for v in txns.values())
