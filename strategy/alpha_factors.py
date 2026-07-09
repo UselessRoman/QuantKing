@@ -228,7 +228,13 @@ class FactorHandler:
         return factors
 
     def _load_factors_pandas(self) -> pd.DataFrame:
-        """使用 pandas 从 Parquet 数据批量向量化计算因子"""
+        """使用 pandas 从 Parquet 数据批量向量化计算因子
+
+        P2 架构优化：
+        - 用 ThreadPoolExecutor 并行加载 Parquet（替代串行逐股读）
+        - 用 df.assign(code=code) 替代 df.copy() + df['code']=code
+        - 分块计算因子：每批 500 股加载→计算因子→append，避免全量 concat 内存峰值
+        """
         from data.database import Database
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -240,28 +246,66 @@ class FactorHandler:
         max_stocks = getattr(self, '_max_stocks', None) or len(codes)
         codes = codes[:max_stocks]
 
-        # 批量加载所有股票数据并合并为一个大 DataFrame
-        all_frames = []
-        for code in codes:
-            df = db.get_daily_kline_df(code, '1d', self.start_time, self.end_time)
+        factor_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+
+        # P2 优化：并行预加载 DataFrame
+        def _read_one(code):
+            df = db.get_daily_kline_df(code, '1d', self.start_time, self.end_time,
+                                       columns=factor_columns)
             if df.empty or len(df) < 120:
-                continue
-            df = df.copy()
-            df['code'] = code
-            all_frames.append(df)
+                return code, None
+            # P2 优化：用 assign 替代 copy + 赋值，少一次内存拷贝
+            return code, df.assign(code=code)
+
+        loaded_frames = []
+        max_workers = min(8, len(codes)) if len(codes) > 1 else 1
+        if max_workers > 1:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_read_one, c): c for c in codes}
+                for future in as_completed(futures):
+                    code, df = future.result()
+                    if df is not None:
+                        loaded_frames.append(df)
+        else:
+            for code in codes:
+                c, df = _read_one(code)
+                if df is not None:
+                    loaded_frames.append(df)
 
         db.close()
 
-        if not all_frames:
+        if not loaded_frames:
             self._factors = pd.DataFrame()
             return self._factors
 
-        # 合并为统一 DataFrame: (date, code) + OHLCV
-        combined = pd.concat(all_frames, ignore_index=True)
+        # P2 优化：分块计算因子，避免全量 concat 内存峰值
+        # 每批 500 股：concat → 计算因子 → dropna → 收集结果
+        batch_size = 500
+        result_parts = []
 
-        # 向量化计算因子：先按 (code, date) 排序，再用 groupby.transform 一次性
-        # 对所有股票计算滚动指标，避免旧版 groupby.apply 对每组调 Python 函数
-        # （pandas 2.x 会警告且对 5000 只 A 股逐组 apply 很慢）。
+        for i in range(0, len(loaded_frames), batch_size):
+            batch = loaded_frames[i:i + batch_size]
+            combined = pd.concat(batch, ignore_index=True)
+            combined = self._compute_factors(combined)
+            if not combined.empty:
+                result_parts.append(combined)
+
+        if not result_parts:
+            self._factors = pd.DataFrame()
+            return self._factors
+
+        # 最终合并各批结果
+        result = pd.concat(result_parts, ignore_index=False)
+        result = result.sort_index()
+
+        self._factors = result
+        return result
+
+    def _compute_factors(self, combined: pd.DataFrame) -> pd.DataFrame:
+        """对合并后的 DataFrame 计算全部因子，返回 set_index 后的结果。
+
+        从 _load_factors_pandas 抽取，支持分块调用。
+        """
         combined = combined.sort_values(['code', 'date']).reset_index(drop=True)
         combined['close'] = combined['close'].astype(float)
         combined['high'] = combined.get('high', combined['close']).astype(float)
@@ -271,7 +315,7 @@ class FactorHandler:
         g = combined.groupby('code', group_keys=False)
         close = combined['close']
 
-        # 动量类：pct_change 在 transform 下按组计算
+        # 动量类
         for w, name in [(1, 'ret_1d'), (5, 'ret_5d'), (10, 'ret_10d'),
                         (20, 'ret_20d'), (60, 'ret_60d')]:
             combined[name] = g['close'].transform(lambda s: s.pct_change(w))
@@ -280,7 +324,6 @@ class FactorHandler:
         daily_ret = g['close'].transform(lambda s: s.pct_change())
         combined['std_5d'] = daily_ret.rolling(5).std()
         combined['std_20d'] = daily_ret.rolling(20).std()
-        # hl_ratio 先存为列，再用 transform 按组 rolling（避免 apply）
         combined['_hl_ratio'] = (combined['high'] - combined['low']) / (close + 1e-8)
         combined['hl_amplitude_20d'] = g['_hl_ratio'].transform(lambda s: s.rolling(20).mean())
         combined = combined.drop(columns=['_hl_ratio'])
@@ -297,13 +340,9 @@ class FactorHandler:
             ma = g['close'].transform(lambda s: s.rolling(w).mean())
             combined[f'ma{w}_dev'] = close / ma - 1
 
-        # 技术指标类：RSI/MACD/BB 需整组 ewm 计算，用 transform 传整组 Series。
-        # P1 优化：MACD 三个分量旧代码分别 transform 调用 _calc_macd 3 次，
-        # 每次重算 EMA12/EMA26/DEA，5000 股冗余 ~20000 次 ewm。
-        # 现用 apply 一次计算三列并拆分，减少 66% 计算量。
+        # 技术指标类
         combined['rsi_14'] = g['close'].transform(lambda s: self._calc_rsi(s, 14))
 
-        # MACD 一次计算三列
         def _calc_macd_cols(s):
             dif, dea, hist = FactorHandler._calc_macd(s)
             return pd.DataFrame({'dif': dif, 'dea': dea, 'hist': hist}, index=s.index)
@@ -319,15 +358,11 @@ class FactorHandler:
         vol_ma5_shift1 = g['volume'].transform(lambda s: s.rolling(5).mean().shift(1))
         combined['turnover_5d'] = vol_ma5 / (vol_ma5_shift1 + 1e-8)
 
-        # 训练标签：未来 5 日收益率（close[t+5]/close[t] - 1）。
-        # 用 shift(-5) 取未来值，对未来最后一期 NaN。标签列必须在训练时
-        # 从特征 X 中排除，否则会造成"用未来收益预测未来收益"的数据泄漏。
+        # 训练标签
         combined['forward_ret_5d'] = g['close'].transform(lambda s: s.shift(-5) / s - 1)
 
         result = combined.dropna()
         result = result.set_index(['date', 'code'])
-
-        self._factors = result
         return result
 
     @staticmethod

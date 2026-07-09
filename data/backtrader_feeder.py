@@ -52,7 +52,10 @@ def load_bt_data(df: pd.DataFrame, dtformat: str = '%Y%m%d') -> bt.feeds.PandasD
     """
     将数据库 K线 DataFrame 转换为 backtrader 数据源
 
-    对 DataFrame 做必要预处理后返回 PandasData 实例。
+    P2 架构优化：此处是回测数据流的唯一 copy 点。
+    旧代码 database.get_daily_kline_df 缓存命中时返回 .copy()，
+    load_bt_data 又做一次 .copy()，同一份数据被拷贝两次。
+    现在 database 返回视图，由 load_bt_data 统一做一次 copy。
 
     参数:
         df:       K线 DataFrame，需含 date/open/high/low/close/volume 列
@@ -64,7 +67,7 @@ def load_bt_data(df: pd.DataFrame, dtformat: str = '%Y%m%d') -> bt.feeds.PandasD
     if df.empty:
         return None
 
-    # 复制以避免修改原数据
+    # 回测数据流的唯一 copy 点
     df = df.copy()
 
     # 将 date 列转换为 datetime 并设为 index

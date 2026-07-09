@@ -137,10 +137,12 @@ def convert_kline_to_qlib_format(
         'close': 'close', 'volume': 'volume', 'amount': 'amount',
     }
 
-    # ── 第一遍：读取所有股票，归一化日期，收集全局日历 ──
-    # stock_data: {code: {'df': sorted_df, 'iso_dates': np.array[str]}}
-    stock_data: dict[str, dict] = {}
+    # ── 第一遍：扫描所有 Parquet 收集日期并集（不保留 DF）──
+    # P2 架构优化：旧代码将全部股票 DF 存入 stock_data dict 常驻内存，
+    # 5000 股 × 10 年日线 ≈ 数 GB 峰值。改为两遍流式扫描：
+    # 第一遍只收集日期并集（不存 DF），第二遍逐文件重新读→对齐→写 bin。
     all_iso_dates: set[str] = set()
+    valid_files: list[tuple[str, Path]] = []
 
     for i, pq_file in enumerate(parquet_files):
         try:
@@ -150,34 +152,24 @@ def convert_kline_to_qlib_format(
                 continue
 
             df = df.sort_values('date').reset_index(drop=True)
-            # P2 优化：旧代码用 [_normalize_date(d) for d in df['date'].tolist()]
-            # 逐元素 Python 循环，现用 pd.to_datetime 批量向量化处理
             date_strs = df['date'].astype(str).str.strip()
-            # 尝试解析为 datetime，再统一格式化为 ISO 日期
             parsed = pd.to_datetime(date_strs, errors='coerce', format=None)
             iso_dates = parsed.dt.strftime('%Y-%m-%d').fillna('').to_numpy()
-            # 过滤无法解析的日期
             mask = iso_dates != ''
             if not mask.all():
-                df = df[mask].reset_index(drop=True)
                 iso_dates = iso_dates[mask]
-            if len(df) == 0:
+            if len(iso_dates) == 0:
                 continue
 
-            df['_iso_date'] = iso_dates
-            # 去重（同一交易日保留最后一条）
-            df = df.drop_duplicates(subset='_iso_date', keep='last').reset_index(drop=True)
-            iso_dates = df['_iso_date'].to_numpy()
-
-            stock_data[code] = {'df': df, 'iso_dates': iso_dates}
             all_iso_dates.update(iso_dates.tolist())
+            valid_files.append((code, pq_file))
 
             if (i + 1) % 500 == 0:
-                _logger.info("读取进度: %d/%d", i + 1, len(parquet_files))
+                _logger.info("扫描进度: %d/%d", i + 1, len(parquet_files))
         except Exception as e:
-            _logger.warning("读取 %s 失败: %s", pq_file.name, e)
+            _logger.warning("扫描 %s 失败: %s", pq_file.name, e)
 
-    if not stock_data:
+    if not valid_files:
         _logger.error("没有可转换的有效数据")
         return 0
 
@@ -192,23 +184,33 @@ def convert_kline_to_qlib_format(
     with open(calendars_dir / "day.txt", 'w', encoding='utf-8') as f:
         f.write("\n".join(calendar))
 
-    # ── 第二遍：按日历对齐写各股票特征 ──
+    # ── 第二遍：逐文件重新读取 → 对齐 → 写 bin（不保留 DF）──
     instruments: list[tuple[str, str, str]] = []
     success_count = 0
 
-    for idx, (code, info) in enumerate(stock_data.items()):
+    for idx, (code, pq_file) in enumerate(valid_files):
         try:
-            df = info['df']
-            iso_dates = info['iso_dates']
-            start_date, end_date = iso_dates[0], iso_dates[-1]
+            df = pd.read_parquet(pq_file)
+            if df.empty or 'date' not in df.columns:
+                continue
+
+            df = df.sort_values('date').reset_index(drop=True)
+            date_strs = df['date'].astype(str).str.strip()
+            parsed = pd.to_datetime(date_strs, errors='coerce', format=None)
+            iso_dates = parsed.dt.strftime('%Y-%m-%d').fillna('').to_numpy()
+            mask = iso_dates != ''
+            if not mask.all():
+                df = df[mask].reset_index(drop=True)
+                iso_dates = iso_dates[mask]
+            if len(df) == 0:
+                continue
+
+            start_date, end_date = str(iso_dates[0]), str(iso_dates[-1])
             instruments.append((code, start_date, end_date))
 
             stock_dir = features_dir / code
             stock_dir.mkdir(parents=True, exist_ok=True)
 
-            # 构造对齐掩码：该股票在全局日历中的有效位置
-            # P2 优化：旧代码用 [cal_index[d] for d in iso_dates] 逐元素 dict 查找，
-            # 现用 pd.Series.map 向量化
             positions = pd.Series(iso_dates).map(cal_index).to_numpy()
 
             for field, filename in field_map.items():
@@ -221,7 +223,7 @@ def convert_kline_to_qlib_format(
 
             success_count += 1
             if (idx + 1) % 500 == 0:
-                _logger.info("转换进度: %d/%d", idx + 1, len(stock_data))
+                _logger.info("转换进度: %d/%d", idx + 1, len(valid_files))
         except Exception as e:
             _logger.warning("转换 %s 失败: %s", code, e)
 
@@ -230,7 +232,7 @@ def convert_kline_to_qlib_format(
         for code, start_date, end_date in sorted(instruments):
             f.write(f"{code}\t{start_date}\t{end_date}\n")
 
-    _logger.info("qlib 数据转换完成: %d/%d 只股票", success_count, len(stock_data))
+    _logger.info("qlib 数据转换完成: %d/%d 只股票", success_count, len(valid_files))
     return success_count
 
 

@@ -14,8 +14,16 @@
 """
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
+import time
 
 router = APIRouter()
+
+# P3 架构优化：模块级缓存，避免每次请求重新加载因子/模型
+# 旧代码每次 /predict 请求都 new FactorHandler + load_factors + trainer.load，
+# 每次 /signals 请求都 new SignalGenerator（_cache 永远为空）。
+_model_cache: dict = {}        # {(instruments, start, end): (trainer, handler, timestamp)}
+_signal_cache: dict = {}       # {(instruments, start, end): (SignalGenerator, timestamp)}
+_CACHE_TTL = 300               # 5 分钟 TTL
 
 
 class TrainRequest(BaseModel):
@@ -131,30 +139,51 @@ async def train_model(req: TrainRequest):
 
 @router.post("/predict")
 async def predict_signals(req: PredictRequest):
-    """生成选股预测"""
+    """生成选股预测
+
+    P3 架构优化：使用模块级缓存避免每次请求重新加载因子+模型。
+    缓存键为 (instruments, start_time, end_time)，TTL 5 分钟。
+    """
     try:
         from strategy.alpha_factors import FactorHandler
         from strategy.qlib_model import QlibTrainer
         from strategy.signal_generator import SignalGenerator
 
-        handler = FactorHandler(
-            instruments=req.instruments,
-            start_time=req.start_time,
-            end_time=req.end_time,
-        )
-        handler.load_factors(use_qlib=True)
+        cache_key = (req.instruments, req.start_time, req.end_time)
+        now = time.time()
 
-        trainer = QlibTrainer()
-        if req.model_path:
-            trainer.load(req.model_path)
+        # P3 优化：从缓存获取已训练的 trainer + handler
+        cached = _model_cache.get(cache_key)
+        if cached and (now - cached[2]) < _CACHE_TTL:
+            trainer, handler = cached[0], cached[1]
         else:
-            train_result = trainer.train(handler)
-            if "error" in train_result:
-                return {"status": "error", "message": train_result["error"]}
+            handler = FactorHandler(
+                instruments=req.instruments,
+                start_time=req.start_time,
+                end_time=req.end_time,
+            )
+            handler.load_factors(use_qlib=True)
+
+            trainer = QlibTrainer()
+            if req.model_path:
+                trainer.load(req.model_path)
+            else:
+                train_result = trainer.train(handler)
+                if "error" in train_result:
+                    return {"status": "error", "message": train_result["error"]}
+
+            _model_cache[cache_key] = (trainer, handler, now)
 
         predictions = trainer.predict(handler)
 
-        sg = SignalGenerator()
+        # P3 优化：缓存 SignalGenerator 实例（保留 _cache）
+        sg_cached = _signal_cache.get(cache_key)
+        if sg_cached and (now - sg_cached[1]) < _CACHE_TTL:
+            sg = sg_cached[0]
+        else:
+            sg = SignalGenerator()
+            _signal_cache[cache_key] = (sg, now)
+
         signals = sg.generate(predictions, top_k=req.top_k, min_score=req.min_score)
 
         return {
@@ -171,10 +200,22 @@ async def predict_signals(req: PredictRequest):
 
 @router.get("/signals")
 def get_signals(request: Request, top_k: int = Query(20)):
-    """获取最新选股信号（从缓存）"""
+    """获取最新选股信号（从缓存）
+
+    P3 架构优化：从模块级缓存的 SignalGenerator 实例读取信号，
+    而非每次请求 new 一个新实例（旧代码 _cache 永远为空）。
+    """
     from strategy.signal_generator import SignalGenerator
 
-    sg = SignalGenerator()
+    # P3 优化：从缓存获取 SignalGenerator（保留 _cache 中的信号数据）
+    sg = None
+    for cached_sg, ts in _signal_cache.values():
+        sg = cached_sg
+        break
+
+    if sg is None:
+        sg = SignalGenerator()
+
     latest = sg.get_latest_signals()
 
     if latest.empty:

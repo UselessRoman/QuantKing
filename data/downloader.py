@@ -146,10 +146,11 @@ class Downloader:
                     [code], period=period, start_time=start_time, end_time=end_time,
                     count=use_count)
                 if kline is not None and not kline.empty:
-                    records = self._kline_to_records(code, kline)
-                    if records:
+                    # P0 架构优化：直接传 DataFrame，省去 DF→list[dict]→DF 往返
+                    df = self._kline_to_df(code, kline)
+                    if df is not None and not df.empty:
                         with _stats_lock:
-                            self.db.insert_daily_kline(records)
+                            self.db.insert_daily_kline_df(df)
                         return True
                 return False
             except Exception as e:
@@ -357,6 +358,61 @@ class Downloader:
         except Exception as e:
             print(f"转换 {code} K线数据失败: {e}")
         return records
+
+    def _kline_to_df(self, code: str, df: pd.DataFrame) -> pd.DataFrame:
+        """将 miniQMT 返回的 DataFrame 转换为标准 K线 DataFrame。
+
+        P0 架构优化：直接返回 DataFrame，避免旧路径中
+        DF→list[dict](_kline_to_records)→DF(insert_daily_kline) 的往返序列化。
+        与 _kline_to_records 共享提取逻辑，但输出为 DataFrame 供
+        insert_daily_kline_df 直接使用。
+        """
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        try:
+            if isinstance(df.columns, pd.MultiIndex):
+                mask = df.columns.get_level_values(1) == code
+                if not mask.any():
+                    mask = df.columns.get_level_values(0) == code
+                if not mask.any():
+                    return pd.DataFrame()
+                sub = df.loc[:, mask].copy()
+                field_names = {'open', 'high', 'low', 'close', 'volume', 'amount'}
+                code_level = 0
+                for lv in range(sub.columns.nlevels):
+                    sample = str(sub.columns.get_level_values(lv)[0])
+                    if sample in field_names:
+                        code_level = 1 - lv
+                        break
+                sub.columns = sub.columns.droplevel(code_level)
+            else:
+                sub = df.copy()
+
+            # 向量化 round
+            for col in ['open', 'high', 'low', 'close', 'amount']:
+                if col in sub.columns:
+                    sub[col] = sub[col].astype(float).round(2)
+            for col in ['volume']:
+                if col in sub.columns:
+                    sub[col] = sub[col].astype(float)
+
+            sub = sub.reset_index()
+            date_col = sub.columns[0]
+            sub[date_col] = sub[date_col].astype(str)
+            sub['code'] = code
+            for col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
+                if col not in sub.columns:
+                    sub[col] = 0.0
+
+            result = sub[['code', date_col, 'open', 'high', 'low',
+                          'close', 'volume', 'amount']].rename(
+                columns={date_col: 'date'}
+            )
+            return result
+        except Exception as e:
+            print(f"转换 {code} K线数据失败: {e}")
+            return pd.DataFrame()
 
     def close(self):
         if self._own_db:

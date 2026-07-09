@@ -17,6 +17,7 @@
 import pandas as pd
 import backtrader as bt
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from data.database import Database
 from data.backtrader_feeder import load_bt_data
 from backtest.bt_broker import AShareCommission
@@ -78,13 +79,17 @@ class BacktestRunner:
         """
         从本地数据库加载K线数据到 cerebro
 
+        P1 架构优化：多股 Parquet 并行预加载。
+        旧代码串行逐股读 Parquet，N=20 股 = 20 次串行 IO。
+        现用 ThreadPoolExecutor 并行读 DataFrame（Parquet 读取线程安全），
+        再串行构建 PandasData feed。N=20 股预计加速 3-5 倍。
+
         参数:
             codes:      股票代码列表
             start_date: 起始日期 YYYYMMDD
             end_date:   结束日期 YYYYMMDD
             period:     K线周期
-            db:         外部传入的 Database 实例（P2 优化：复用 Web 层连接，
-                        避免每次新建+关闭 SQLite 连接）
+            db:         外部传入的 Database 实例
 
         返回:
             int: 成功加载的股票数量
@@ -97,12 +102,35 @@ class BacktestRunner:
 
         loaded = 0
         try:
+            # P1 优化：并行预加载 DataFrame
+            bt_columns = ['date', 'open', 'high', 'low', 'close', 'volume']
+            df_cache: dict[str, pd.DataFrame] = {}
+
+            def _read_one(code):
+                return code, db.get_daily_kline_df(
+                    code, period, start_date, end_date, columns=bt_columns
+                )
+
+            max_workers = min(8, len(codes)) if len(codes) > 1 else 1
+            if max_workers > 1:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(_read_one, c): c for c in codes}
+                    for future in as_completed(futures):
+                        code, df = future.result()
+                        if not df.empty:
+                            df_cache[code] = df
+            else:
+                for code in codes:
+                    c, df = _read_one(code)
+                    if not df.empty:
+                        df_cache[c] = df
+
+            # 串行构建 PandasData feed（backtrader 非线程安全）
             for code in codes:
-                df = db.get_daily_kline_df(code, period, start_date, end_date)
-                if df.empty:
+                df = df_cache.get(code)
+                if df is None or df.empty:
                     print(f"警告: {code} 无数据，跳过")
                     continue
-
                 data = load_bt_data(df)
                 if data is not None:
                     data._name = code

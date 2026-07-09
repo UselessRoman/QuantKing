@@ -13,6 +13,7 @@
 """
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
+import asyncio
 import json
 from datetime import datetime
 
@@ -104,26 +105,38 @@ def get_backtest_strategies():
 
 @router.post("/run")
 async def run_backtest(request: Request, req: BacktestRequest):
-    """执行回测"""
+    """执行回测
+
+    P3 架构优化：回测是 CPU 密集型同步操作，旧代码在 async def 中
+    直接执行会阻塞 FastAPI 事件循环。现用 run_in_executor 放入线程池。
+    """
     try:
         from backtest.runner import BacktestRunner
     except ImportError:
         return {"status": "error", "message": "backtrader 未安装，请执行 pip install backtrader"}
 
-    try:
+    def _do_backtest():
+        """同步回测逻辑，在线程池中执行"""
         runner = BacktestRunner(initial_capital=req.initial_capital)
-
         loaded = runner.load_data_from_db(
-            req.stock_codes, req.start_date, req.end_date
+            req.stock_codes, req.start_date, req.end_date,
+            db=getattr(request.app.state, 'database', None)
         )
-
         if loaded == 0:
-            return {"status": "error", "message": "未加载到任何K线数据，请先下载数据"}
-
+            return None, "未加载到任何K线数据，请先下载数据"
         runner.set_strategy(req.strategy_name, **req.params)
         result = runner.run()
+        return result, None
 
-        # 保存到历史（落库，失败回退内存）
+    try:
+        # P3 优化：CPU 密集型任务放入线程池，避免阻塞事件循环
+        result, error = await asyncio.get_event_loop().run_in_executor(
+            None, _do_backtest
+        )
+        if error:
+            return {"status": "error", "message": error}
+
+        # 保存到历史
         history_entry = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "strategy": req.strategy_name,
