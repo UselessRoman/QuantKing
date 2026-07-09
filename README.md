@@ -83,7 +83,7 @@ miniQMT ──download_history──▶ XTquant 本地缓存
    qlib DataHandler  绩效报告                    SignalGenerator
            │                                         │
            ▼                                         ▼
-   Alpha158 因子                               Top-K 选股列表
+   22+ Alpha 因子                              Top-K 选股列表
                                                │
                                                ▼
                                 ┌─ QlibSignalStrategy (回测)
