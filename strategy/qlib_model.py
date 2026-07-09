@@ -50,14 +50,19 @@ class QlibTrainer:
         self._model = None
         self._feature_importance: Optional[pd.DataFrame] = None
         self._use_qlib = False
+        # P0-2 修复：保存训练时的特征列顺序和 fillna 中位数，predict 时复用。
+        # 旧代码 predict 按 feature_importance 排序取特征列，与训练时的
+        # DataFrame 列顺序不一致，LightGBM 按列位置匹配导致预测错乱。
+        self._feature_cols: Optional[list] = None
+        self._fillna_medians: Optional[pd.Series] = None
 
-    def train(self, handler, target_col: str = 'ret_5d') -> dict:
+    def train(self, handler, target_col: str = 'forward_ret_5d') -> dict:
         """
         训练模型
 
         参数:
             handler:     FactorHandler 实例（需已调用 load_factors）
-            target_col:  目标列名（预测标签），如 'ret_5d' 表示预测未来5日收益率
+            target_col:  目标列名（预测标签），默认 'forward_ret_5d'（未来5日收益率）
 
         返回:
             dict: 训练结果，包含 loss/IC 等指标
@@ -68,83 +73,36 @@ class QlibTrainer:
 
         # 尝试使用 qlib 原生训练
         try:
-            return self._train_with_qlib(handler)
+            return self._train_with_qlib(handler, target_col)
         except Exception as e:
             print(f"qlib 训练失败 ({e})，回退到 sklearn 模式")
-            return self._train_sklearn(factors)
+            return self._train_sklearn(factors, target_col)
 
-    def _train_with_qlib(self, handler) -> dict:
-        """使用 qlib 框架训练"""
+    def _train_with_qlib(self, handler, target_col: str = 'forward_ret_5d') -> dict:
+        """使用 qlib 初始化后的因子数据进行训练
+
+        P0-3b 修复：旧代码新建 Alpha158 DatasetH 完全忽略 handler._factors，
+        且 segments 日期硬编码为 2010-2025。qlib 的 LGBModel 需要 DatasetH
+        对象，从 DataFrame 构造复杂且 predict 路径调用了不存在的
+        handler._get_dataset()。改为确保 qlib 已初始化后委托给 sklearn
+        模式训练，保证特征处理与预测路径完全一致。
+        """
         try:
-            import qlib
-            from qlib.contrib.model.gbdt import LGBModel
-            from qlib.data.dataset import DatasetH
-            from qlib.data.dataset.handler import DataHandlerLP
-
-            self._use_qlib = True
-
-            handler._init_qlib()
-            factors = handler._factors
-
-            if factors is None or factors.empty:
-                return {"error": "因子数据为空"}
-
-            # 准备数据集
-            feature_cols = [c for c in factors.columns
-                            if c in handler.get_factor_meta()]
-
-            # 使用 qlib DatasetH
-            dataset_config = {
-                "class": "DatasetH",
-                "module_path": "qlib.data.dataset",
-                "kwargs": {
-                    "handler": {
-                        "class": "Alpha158",
-                        "module_path": "qlib.contrib.data.handler",
-                        "kwargs": {
-                            "start_time": handler.start_time or "2010-01-01",
-                            "end_time": handler.end_time or "2025-12-31",
-                            "fit_start_time": handler.start_time or "2010-01-01",
-                            "fit_end_time": handler.end_time or "2025-12-31",
-                            "instruments": handler.instruments,
-                        },
-                    },
-                    "segments": {
-                        "train": ("2010-01-01", "2020-12-31"),
-                        "valid": ("2021-01-01", "2022-12-31"),
-                        "test": ("2023-01-01", "2025-12-31"),
-                    },
-                },
-            }
-
-            # LightGBM 模型参数
-            model = LGBModel(
-                loss="mse",
-                num_leaves=64,
-                max_depth=6,
-                learning_rate=0.05,
-                n_estimators=500,
-                early_stopping_rounds=50,
-                lambda_l1=1.0,
-                lambda_l2=1.0,
-            )
-
-            dataset = DatasetH(**dataset_config["kwargs"])
-            model.fit(dataset)
-
-            self._model = model
-            self._feature_importance = model.get_feature_importance()
-
-            return {
-                "status": "success",
-                "model_type": self.model_type,
-                "features": len(feature_cols),
-            }
-
+            import qlib  # noqa: F401 — 仅验证 qlib 可用
         except ImportError:
             raise ImportError("请安装 qlib: pip install pyqlib")
 
-    def _train_sklearn(self, factors: pd.DataFrame) -> dict:
+        # 确保 qlib 已初始化（因子已通过 D.features 计算）
+        handler._init_qlib()
+        factors = handler._factors
+
+        if factors is None or factors.empty:
+            return {"error": "因子数据为空"}
+
+        # 委托给 sklearn 模式，确保特征列顺序与 predict 一致
+        return self._train_sklearn(factors, target_col)
+
+    def _train_sklearn(self, factors: pd.DataFrame, label_col: str = 'forward_ret_5d') -> dict:
         """使用 sklearn LightGBM 训练（qlib 不可用时的回退方案）"""
         try:
             import lightgbm as lgb
@@ -157,7 +115,12 @@ class QlibTrainer:
         # 旧代码 y = X.get('ret_5d') 把动量因子 ret_5d 当标签，而 ret_5d 同时
         # 是特征列（过去5日收益），并非未来收益，属于标签构造错误。
         meta_cols = ['code', 'date']
-        label_col = 'forward_ret_5d'
+
+        if label_col not in factors.columns:
+            return {
+                "error": f"缺少标签列 {label_col}，请确认 FactorHandler 已构造未来收益标签"
+            }
+
         feature_cols = [
             c for c in factors.columns
             if c not in meta_cols and c != label_col
@@ -176,7 +139,10 @@ class QlibTrainer:
 
         X = factors[feature_cols].copy()
         X = X.replace([np.inf, -np.inf], np.nan)
-        X = X.fillna(X.median())
+        # P0-2 修复：保存训练时的 fillna 中位数，predict 时复用。
+        # 旧代码 predict 用全量数据中位数（含预测期），属于轻微信息泄漏。
+        fillna_medians = X.median()
+        X = X.fillna(fillna_medians)
         y = factors[label_col].copy()
 
         # 按日期切分训练/验证集，而非按行数。
@@ -232,6 +198,12 @@ class QlibTrainer:
         self._model = model
         self._use_qlib = False
 
+        # P0-2 修复：保存训练时的特征列顺序和中位数，predict 时按此顺序取特征。
+        # 旧代码 predict 按 feature_importance 排序取列，顺序与训练不一致，
+        # LightGBM 按列位置匹配特征，顺序错位会导致预测结果完全错误。
+        self._feature_cols = feature_cols
+        self._fillna_medians = fillna_medians
+
         # 特征重要性
         importance = pd.DataFrame({
             'feature': feature_cols,
@@ -265,26 +237,46 @@ class QlibTrainer:
         if factors is None or factors.empty:
             raise ValueError("因子数据为空")
 
-        if self._use_qlib:
-            try:
-                # qlib 模型的 predict 接口
-                predictions = self._model.predict(handler._get_dataset())
-                return predictions
-            except Exception:
-                pass
-
-        # sklearn 模式
+        # P0-1 + P0-3b 修复：统一使用 sklearn predict 路径。
+        # 旧代码 qlib 模式调用 handler._get_dataset()（方法不存在，必然抛
+        # AttributeError 被 except Exception: pass 静默吞掉），然后回退到
+        # sklearn 路径。现直接走 sklearn，避免无效尝试。
         meta_cols = ['code', 'date']
-        feature_cols = [c for c in self._feature_importance['feature']
-                        if c in factors.columns and c not in meta_cols]
+        label_col = 'forward_ret_5d'
+
+        # P0-2 修复：优先使用训练时保存的特征列顺序。
+        # 旧代码按 feature_importance 排序取列，与训练时 DataFrame 列顺序
+        # 不一致，LightGBM 按列位置匹配导致预测错乱。
+        if self._feature_cols is not None:
+            feature_cols = [c for c in self._feature_cols if c in factors.columns]
+        elif self._feature_importance is not None:
+            # 兼容旧模型（无 _feature_cols）：从 importance 取，但排除标签
+            feature_cols = [
+                c for c in self._feature_importance['feature']
+                if c in factors.columns and c not in meta_cols and c != label_col
+            ]
+        else:
+            feature_cols = []
 
         if not feature_cols:
-            # 回退：使用所有因子列
-            feature_cols = [c for c in factors.columns if c not in meta_cols and c != 'ret_5d']
+            return pd.Series(dtype=float, index=factors.index)
 
         X = factors[feature_cols].copy()
         X = X.replace([np.inf, -np.inf], np.nan)
-        X = X.fillna(X.median())
+
+        # P0-1 修复：使用训练时保存的中位数，而非全量数据中位数。
+        # 旧代码 predict 回退路径排除 'ret_5d'（动量因子）而非
+        # 'forward_ret_5d'（标签），导致标签列作为特征参与预测，构成
+        # 直接的未来信息泄露。现在 _feature_cols 已在训练时排除了标签，
+        # 此处只需用保存的中位数填充即可。
+        if self._fillna_medians is not None:
+            # 仅取当前特征列对应的中位数（兼容列子集）
+            available_medians = self._fillna_medians[
+                [c for c in feature_cols if c in self._fillna_medians.index]
+            ]
+            X = X.fillna(available_medians)
+        else:
+            X = X.fillna(X.median())
 
         predictions = self._model.predict(X)
         return pd.Series(predictions, index=factors.index)
@@ -305,6 +297,8 @@ class QlibTrainer:
             'model_type': self.model_type,
             'use_qlib': self._use_qlib,
             'feature_importance': self._feature_importance,
+            'feature_cols': self._feature_cols,
+            'fillna_medians': self._fillna_medians,
         }
         with open(path, 'wb') as f:
             pickle.dump(data, f)
@@ -324,6 +318,8 @@ class QlibTrainer:
         self.model_type = data.get('model_type', 'LightGBM')
         self._use_qlib = data.get('use_qlib', False)
         self._feature_importance = data.get('feature_importance')
+        self._feature_cols = data.get('feature_cols')
+        self._fillna_medians = data.get('fillna_medians')
 
         print(f"模型已加载: {path}")
 

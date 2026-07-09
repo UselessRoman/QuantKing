@@ -212,10 +212,28 @@ async def compare_strategies(request: Request):
         return {"status": "error", "message": "backtrader 未安装，请执行 pip install backtrader"}
 
     try:
+        # P2 优化：旧代码每个策略都新建 BacktestRunner 并重复 load_data_from_db，
+        # N 策略 × M 股票 = N×M 次 Parquet 读取。现预加载一次 DataFrame，
+        # 用 load_data_from_df 复用，仅 N 次 backtrader feed 构建（不可避免）。
+        db = request.app.state.database
+        from data.database import Database
+        from data.backtrader_feeder import load_bt_data
+        import backtrader as bt
+
+        kline_dict = {}
+        for code in stock_codes:
+            df = db.get_daily_kline_df(code, '1d', start_date, end_date)
+            if not df.empty:
+                kline_dict[code] = df
+
+        if not kline_dict:
+            return {"status": "error", "message": "无可用K线数据"}
+
         results = []
         for s_name in strategies:
             runner = BacktestRunner(initial_capital=initial_capital)
-            loaded = runner.load_data_from_db(stock_codes, start_date, end_date)
+            # 复用已加载的 DataFrame，避免重复读 Parquet
+            loaded = runner.load_data_from_df(kline_dict)
             if loaded == 0:
                 continue
             runner.set_strategy(s_name)

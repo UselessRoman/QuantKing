@@ -53,7 +53,7 @@ FACTOR_META = {
     "macd_hist":         {"category": "技术指标", "desc": "MACD 柱"},
     "bb_position":       {"category": "技术指标", "desc": "布林带位置"},
     "reversal_3d":       {"category": "反转",     "desc": "3日反转信号"},
-    "turnover_5d":       {"category": "流动性",   "desc": "5日换手率"},
+    "turnover_5d":       {"category": "流动性",   "desc": "5日均量环比变化率"},
 }
 
 # ──── qlib 因子表达式定义 ────
@@ -61,15 +61,18 @@ FACTOR_META = {
 # 注意：QLIB_FACTOR_EXPRESSIONS / QLIB_FACTOR_NAMES 必须与 FACTOR_META 的 22 个
 # 因子完全对齐，否则 qlib 模式与 pandas 模式特征不一致，模型在两模式间切换会错位。
 QLIB_FACTOR_EXPRESSIONS = [
-    # 动量类
-    "Ref($close, -1) / Ref($close, -2) - 1",                              # ret_1d
-    "Ref($close, -1) / Ref($close, -6) - 1",                              # ret_5d
-    "Ref($close, -1) / Ref($close, -11) - 1",                             # ret_10d
-    "Ref($close, -1) / Ref($close, -21) - 1",                             # ret_20d
-    "Ref($close, -1) / Ref($close, -61) - 1",                             # ret_60d
+    # 动量类：今日收盘 / N日前收盘 - 1
+    # P0-3a 修复：旧代码用 Ref($close, -1)（未来值）计算收益率，方向反了。
+    # qlib 中 Ref(x, n>0) = n期前的值（过去），Ref(x, n<0) = n期后的值（未来）。
+    # 收益率 = 今日 / 过去 - 1，应使用正数 Ref。
+    "$close / Ref($close, 1) - 1",                                        # ret_1d
+    "$close / Ref($close, 5) - 1",                                        # ret_5d
+    "$close / Ref($close, 10) - 1",                                       # ret_10d
+    "$close / Ref($close, 20) - 1",                                       # ret_20d
+    "$close / Ref($close, 60) - 1",                                       # ret_60d
     # 波动率类
-    "Std(Ref($close, -1) / Ref($close, -2) - 1, 5)",                      # std_5d
-    "Std(Ref($close, -1) / Ref($close, -2) - 1, 20)",                     # std_20d
+    "Std($close / Ref($close, 1) - 1, 5)",                                # std_5d
+    "Std($close / Ref($close, 1) - 1, 20)",                               # std_20d
     "Mean(($high - $low) / $close, 20)",                                   # hl_amplitude_20d
     # 量价类
     "Mean($volume, 5) / (Mean($volume, 20) + 1e-8)",                      # vol_ratio_5_20
@@ -92,7 +95,7 @@ QLIB_FACTOR_EXPRESSIONS = [
     # 布林带位置：(close - MA20) / (Std20 * 2)，归一化到 [-1, 1] 区间
     "($close - Mean($close, 20)) / (Std($close, 20) * 2 + 1e-8)",          # bb_position
     # 反转类
-    "-(Ref($close, -1) / Ref($close, -4) - 1)",                            # reversal_3d
+    "-($close / Ref($close, 3) - 1)",                                     # reversal_3d
     # 流动性类：5日均量相对前一日的环比变化率（与 pandas 版一致）
     "Mean($volume, 5) / Ref(Mean($volume, 5), 1) - 1",                      # turnover_5d
 ]
@@ -189,42 +192,40 @@ class FactorHandler:
         return self._load_factors_pandas()
 
     def _load_factors_qlib(self) -> pd.DataFrame:
-        """使用 qlib DataHandler 计算因子"""
+        """使用 qlib D.features() 计算自定义因子（与 pandas 模式一致）
+
+        P0-3a 修复：旧代码直接用 Alpha158（~158 因子），与 pandas 模式的
+        22 个自定义因子完全不同，导致 qlib/pandas 模式切换时特征集错位、
+        模型失效。改为使用 QLIB_FACTOR_EXPRESSIONS 通过 D.features() 计算
+        与 pandas 模式完全对齐的 22 个因子 + forward_ret_5d 标签。
+        """
         self._init_qlib()
 
         from qlib.data import D
-        from qlib.data.dataset.handler import DataHandlerLP
 
-        # 配置 qlib DataHandler
-        handler_config = {
-            "start_time": self.start_time or "2010-01-01",
-            "end_time": self.end_time or "2025-12-31",
-            "fit_start_time": self.start_time or "2010-01-01",
-            "fit_end_time": self.end_time or "2025-12-31",
-            "instruments": self.instruments,
-        }
+        start = self.start_time or "2010-01-01"
+        end = self.end_time or "2025-12-31"
 
-        # 尝试使用 Alpha158 因子集
-        try:
-            from qlib.contrib.data.handler import Alpha158
-            handler = Alpha158(**handler_config)
-            factors = handler.fetch(col_set="feature")
-            self._factors = factors
-            return factors
-        except ImportError:
-            pass
+        # 使用自定义因子表达式，确保与 pandas 模式产出完全一致
+        # 标签：未来5日收益率 Ref($close, -5) / $close - 1（负数 Ref 取未来值）
+        label_expr = "Ref($close, -5) / $close - 1"
+        fields = QLIB_FACTOR_EXPRESSIONS + [label_expr]
+        names = QLIB_FACTOR_NAMES + ["forward_ret_5d"]
 
-        # 回退到 DataHandlerLP
-        try:
-            handler = DataHandlerLP(
-                **handler_config,
-                data_loader_kwargs={"backend": {"class": "DataLoader"}},
-            )
-            factors = handler.fetch(col_set="feature")
-            self._factors = factors
-            return factors
-        except Exception:
-            raise
+        factors = D.features(
+            instruments=self.instruments,
+            fields=fields,
+            start_time=start,
+            end_time=end,
+        )
+        # D.features 返回的列名为表达式字符串，重命名为因子名
+        factors.columns = names
+
+        # 与 pandas 模式一致：丢弃因滚动窗口不足产生 NaN 的行
+        factors = factors.dropna()
+
+        self._factors = factors
+        return factors
 
     def _load_factors_pandas(self) -> pd.DataFrame:
         """使用 pandas 从 Parquet 数据批量向量化计算因子"""
@@ -297,14 +298,20 @@ class FactorHandler:
             combined[f'ma{w}_dev'] = close / ma - 1
 
         # 技术指标类：RSI/MACD/BB 需整组 ewm 计算，用 transform 传整组 Series。
-        # MACD 三个分量分别 transform，避免 apply 返回 DataFrame 的多级索引问题。
+        # P1 优化：MACD 三个分量旧代码分别 transform 调用 _calc_macd 3 次，
+        # 每次重算 EMA12/EMA26/DEA，5000 股冗余 ~20000 次 ewm。
+        # 现用 apply 一次计算三列并拆分，减少 66% 计算量。
         combined['rsi_14'] = g['close'].transform(lambda s: self._calc_rsi(s, 14))
-        combined['macd_dif'] = g['close'].transform(
-            lambda s: self._calc_macd(s)[0])
-        combined['macd_signal'] = g['close'].transform(
-            lambda s: self._calc_macd(s)[1])
-        combined['macd_hist'] = g['close'].transform(
-            lambda s: self._calc_macd(s)[2])
+
+        # MACD 一次计算三列
+        def _calc_macd_cols(s):
+            dif, dea, hist = FactorHandler._calc_macd(s)
+            return pd.DataFrame({'dif': dif, 'dea': dea, 'hist': hist}, index=s.index)
+        macd_result = g['close'].apply(_calc_macd_cols)
+        combined['macd_dif'] = macd_result['dif']
+        combined['macd_signal'] = macd_result['dea']
+        combined['macd_hist'] = macd_result['hist']
+
         combined['bb_position'] = g['close'].transform(self._calc_bb_position)
 
         # 反转 / 流动性

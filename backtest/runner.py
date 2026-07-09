@@ -73,7 +73,8 @@ class BacktestRunner:
         self.cerebro.addanalyzer(bt.analyzers.VWR, _name='vwr')
 
     def load_data_from_db(self, codes: list[str], start_date: str = '',
-                           end_date: str = '', period: str = '1d') -> int:
+                           end_date: str = '', period: str = '1d',
+                           db: 'Database' = None) -> int:
         """
         从本地数据库加载K线数据到 cerebro
 
@@ -82,12 +83,16 @@ class BacktestRunner:
             start_date: 起始日期 YYYYMMDD
             end_date:   结束日期 YYYYMMDD
             period:     K线周期
+            db:         外部传入的 Database 实例（P2 优化：复用 Web 层连接，
+                        避免每次新建+关闭 SQLite 连接）
 
         返回:
             int: 成功加载的股票数量
         """
-        db = Database()
-        db.connect()
+        own_db = db is None
+        if own_db:
+            db = Database()
+            db.connect()
         self._db = db
 
         loaded = 0
@@ -100,12 +105,12 @@ class BacktestRunner:
 
                 data = load_bt_data(df)
                 if data is not None:
-                    # 设置数据名称用于策略中识别
                     data._name = code
                     self.cerebro.adddata(data, name=code)
                     loaded += 1
         finally:
-            db.close()
+            if own_db:
+                db.close()
 
         print(f"已加载 {loaded}/{len(codes)} 只股票的K线数据")
         return loaded
@@ -144,6 +149,13 @@ class BacktestRunner:
             strategy_cls = get_strategy(strategy_cls_or_name)
         else:
             strategy_cls = strategy_cls_or_name
+
+        # P2 修复：防止重复调用导致注册多个策略实例
+        # 旧代码每次调用都 cerebro.addstrategy，多次调用会注册多个策略
+        if hasattr(self, '_strategy_added') and self._strategy_added:
+            # 清空已有策略再添加（cerebro 无直接 remove，通过重建策略列表实现）
+            self.cerebro.strats = []
+        self._strategy_added = True
 
         self.cerebro.addstrategy(strategy_cls, **params)
         print(f"已设置策略: {strategy_cls.__name__}")

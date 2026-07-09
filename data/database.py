@@ -65,6 +65,11 @@ class Database:
         # 增量写入缓存: 避免每次全量读取 Parquet 做去重
         # {file_path: set of (code, date) tuples}
         self._date_cache: dict[str, set] = {}
+        # P2 优化：读侧 LRU 缓存 {(code, period, start, end): DataFrame}
+        # 用 OrderedDict 实现简易 LRU，上限 200 条防内存膨胀
+        from collections import OrderedDict
+        self._read_cache: OrderedDict = OrderedDict()
+        self._read_cache_max = 200
 
     # ──────────── 连接管理 ────────────
 
@@ -77,6 +82,7 @@ class Database:
             self.conn.close()
             self.conn = None
         self._date_cache.clear()
+        self._read_cache.clear()
 
     def initialize(self):
         self.conn.executescript("""
@@ -276,6 +282,12 @@ class Database:
     ) -> tuple[int, pd.DataFrame]:
         """通用 Parquet 增量写入：去重 → 合并 → 排序 → 写入。
 
+        P2 优化：
+        - 旧代码单次插入读 Parquet 2-3 次（seen 构建 + concat + _update_kline_index），
+          现复用已读的 existing/merged，降至 0-1 次。
+        - seen 集合改用 set(existing[date]) 替代 to_dict('records') 全表序列化。
+        - 无新记录时直接返回已读的 existing，不再重读。
+
         Args:
             records: 待写入的记录列表
             file_path: Parquet 文件路径
@@ -292,39 +304,43 @@ class Database:
         df = pd.DataFrame(records)
         file_key = str(file_path)
 
-        def _key(r: dict) -> tuple:
-            return tuple(str(r[col]) for col in key_columns)
-
         if file_path.exists():
+            existing = pd.read_parquet(file_path)
             if use_cache and file_key in self._date_cache:
                 seen = self._date_cache[file_key]
             else:
-                existing = pd.read_parquet(file_path)
-                seen = {_key(r) for r in existing.to_dict('records')}
+                # P2 优化：同文件内 code 固定，只需按 date 去重
+                if len(key_columns) == 2 and sort_column in key_columns:
+                    seen = set(existing[sort_column].astype(str))
+                else:
+                    seen = set(existing[key_columns[0]].astype(str))
                 if use_cache:
                     self._date_cache[file_key] = seen
 
-            new_records = [r for r in records if _key(r) not in seen]
+            new_records = [r for r in records
+                           if str(r[sort_column if len(key_columns) == 2 else key_columns[0]]) not in seen]
             if new_records:
                 new_df = pd.DataFrame(new_records)
-                merged = pd.concat([pd.read_parquet(file_path), new_df], ignore_index=True)
+                # P2 优化：复用已读的 existing，不再 pd.read_parquet 第二次
+                merged = pd.concat([existing, new_df], ignore_index=True)
                 merged = merged.drop_duplicates(subset=key_columns, keep='last')
                 merged.sort_values(sort_column, inplace=True)
                 merged.to_parquet(file_path, index=False)
 
                 if use_cache:
                     for r in new_records:
-                        self._date_cache[file_key].add(_key(r))
+                        self._date_cache[file_key].add(str(r[sort_column if len(key_columns) == 2 else key_columns[0]]))
 
                 return len(new_records), merged
             else:
-                return 0, pd.read_parquet(file_path)
+                # P2 优化：无新记录时直接返回已读的 existing，不再重读
+                return 0, existing
         else:
             df.sort_values(sort_column, inplace=True)
             df.to_parquet(file_path, index=False)
 
             if use_cache:
-                self._date_cache[file_key] = {_key(r) for r in records}
+                self._date_cache[file_key] = set(df[sort_column].astype(str))
 
             return len(records), df
 
@@ -342,7 +358,9 @@ class Database:
         code = records[0]['code']
         file_path = self._kline_path(code, period)
 
-        count, _ = self._incremental_write_parquet(
+        # P2 优化：复用 _incremental_write_parquet 返回的 merged DataFrame，
+        # 避免 _update_kline_index 再次 read_parquet
+        count, merged_df = self._incremental_write_parquet(
             records=records,
             file_path=file_path,
             key_columns=['code', 'date'],
@@ -350,14 +368,17 @@ class Database:
             use_cache=True,
         )
 
-        self._update_kline_index(code, period, str(file_path), count)
+        self._update_kline_index(code, period, str(file_path), count, merged_df)
         return count
 
-    def _update_kline_index(self, code: str, period: str, file_path: str, added: int):
+    def _update_kline_index(self, code: str, period: str, file_path: str,
+                            added: int, df: pd.DataFrame = None):
         file = Path(file_path)
         if not file.exists():
             return
-        df = pd.read_parquet(file_path)
+        # P2 优化：优先使用传入的 df（已合并的 DataFrame），避免重读 Parquet
+        if df is None:
+            df = pd.read_parquet(file_path)
         start_date = str(df['date'].iloc[0]) if len(df) > 0 else ''
         end_date = str(df['date'].iloc[-1]) if len(df) > 0 else ''
         row_count = len(df)
@@ -371,11 +392,22 @@ class Database:
         file_path = self._kline_path(code, period)
         if not file_path.exists():
             return pd.DataFrame()
+        # P2 优化：读侧 LRU 缓存，避免回测/因子计算反复读盘
+        cache_key = (code, period, start_date, end_date)
+        if hasattr(self, '_read_cache') and cache_key in self._read_cache:
+            return self._read_cache[cache_key].copy()
+
         df = pd.read_parquet(file_path)
         if start_date:
             df = df[df['date'] >= start_date]
         if end_date:
             df = df[df['date'] <= end_date]
+
+        if hasattr(self, '_read_cache'):
+            self._read_cache[cache_key] = df
+            # LRU 淘汰
+            if len(self._read_cache) > self._read_cache_max:
+                self._read_cache.popitem(last=False)
         return df
 
     def get_daily_kline(self, code: str, start_date: str = '',
@@ -392,6 +424,29 @@ class Database:
         )
         row = cursor.fetchone()
         return row[0] if row and row[0] else None
+
+    def get_latest_kline_dates(self, codes: list[str], period: str = '1d') -> dict[str, str]:
+        """P2 优化：批量查询多只股票的最新K线日期，替代 N+1 逐股查询。
+
+        返回 {code: end_date}，无记录的 code 不包含在结果中。
+        """
+        if not codes:
+            return {}
+        # 用 IN 批量查询；codes 多时分批防 SQL 参数上限
+        result = {}
+        batch_size = 500
+        for i in range(0, len(codes), batch_size):
+            batch = codes[i:i + batch_size]
+            placeholders = ','.join('?' * len(batch))
+            cursor = self.conn.execute(
+                f"SELECT code, end_date FROM kline_index "
+                f"WHERE period = ? AND code IN ({placeholders})",
+                [period] + batch
+            )
+            for code, end_date in cursor.fetchall():
+                if end_date:
+                    result[code] = end_date
+        return result
 
     # ──────────── 分钟K线 ────────────
 

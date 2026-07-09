@@ -150,7 +150,12 @@ def convert_kline_to_qlib_format(
                 continue
 
             df = df.sort_values('date').reset_index(drop=True)
-            iso_dates = np.array([_normalize_date(d) for d in df['date'].tolist()])
+            # P2 优化：旧代码用 [_normalize_date(d) for d in df['date'].tolist()]
+            # 逐元素 Python 循环，现用 pd.to_datetime 批量向量化处理
+            date_strs = df['date'].astype(str).str.strip()
+            # 尝试解析为 datetime，再统一格式化为 ISO 日期
+            parsed = pd.to_datetime(date_strs, errors='coerce', format=None)
+            iso_dates = parsed.dt.strftime('%Y-%m-%d').fillna('').to_numpy()
             # 过滤无法解析的日期
             mask = iso_dates != ''
             if not mask.all():
@@ -202,7 +207,9 @@ def convert_kline_to_qlib_format(
             stock_dir.mkdir(parents=True, exist_ok=True)
 
             # 构造对齐掩码：该股票在全局日历中的有效位置
-            positions = np.array([cal_index[d] for d in iso_dates])
+            # P2 优化：旧代码用 [cal_index[d] for d in iso_dates] 逐元素 dict 查找，
+            # 现用 pd.Series.map 向量化
+            positions = pd.Series(iso_dates).map(cal_index).to_numpy()
 
             for field, filename in field_map.items():
                 if field not in df.columns:

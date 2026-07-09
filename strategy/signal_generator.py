@@ -84,6 +84,13 @@ class SignalGenerator:
         df = pd.DataFrame(results)
         if not df.empty:
             df = df.sort_values(['date', 'rank'])
+
+        # P2 修复：实现 _cache 写入，使 get_latest_signals() 正常工作
+        # 旧代码 _cache 声明了但 generate() 从未写入，get_latest_signals() 永远返回空
+        if not df.empty:
+            for date, group in df.groupby('date'):
+                self._cache[str(date)] = group.reset_index(drop=True)
+
         return df
 
     def _select_top_k(
@@ -136,9 +143,19 @@ class SignalGenerator:
 
         changes = len(to_buy) + len(to_sell)
         if changes > top_k * max_turnover:
-            # 限制换手率
-            to_buy = set(list(to_buy)[:int(top_k * max_turnover)])
-            to_sell = set(list(to_sell)[:int(top_k * max_turnover)])
+            # P2 修复：旧代码 list(set) 顺序不确定，可能丢弃高分股。
+            # 现按预测分数排序后再截断，优先保留高分买入和低分卖出。
+            max_changes = int(top_k * max_turnover)
+            # 买入：按分数从高到低排序
+            buy_scores = latest_signals[latest_signals['code'].isin(to_buy)].sort_values('score', ascending=False)
+            to_buy = set(buy_scores['code'].head(max_changes).tolist())
+            # 卖出：当前持仓不在目标中的，按预测分数从低到高排序（优先卖低分）
+            sell_preds = predictions.copy()
+            if isinstance(sell_preds.index, pd.MultiIndex):
+                latest_date = predictions.index.get_level_values(0).max()
+                sell_preds = sell_preds.xs(latest_date, level=0) if hasattr(sell_preds, 'xs') else sell_preds
+            sell_scores = sell_preds[sell_preds.index.isin(to_sell)].sort_values() if len(sell_preds) > 0 else pd.Series(dtype=float)
+            to_sell = set(sell_scores.index[:max_changes].tolist()) if len(sell_scores) > 0 else to_sell
 
         orders = {}
         for code in to_buy:

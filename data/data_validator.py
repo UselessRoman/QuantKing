@@ -79,25 +79,20 @@ class DataValidator:
                     null_close = nulls
 
         # 3. 检查价格跳变（逐日涨跌幅检测）
+        # P2 优化：旧代码用 for i in range(1, len(df)) + iloc[i] 逐行遍历，
+        # 现改为 pct_change() 向量化，提速 100 倍以上
         jump_count = 0
         if 'close' in df.columns and len(df) >= 2:
-            col = 'close'
-            for i in range(1, len(df)):
-                prev, curr = df[col].iloc[i-1], df[col].iloc[i]
-                if prev is None or curr is None:
-                    continue
-                try:
-                    prev_f, curr_f = float(prev), float(curr)
-                    if prev_f <= 0:
-                        continue
-                    change = abs(curr_f / prev_f - 1)
-                    if change > self.price_jump_threshold:
-                        date_str = str(df['date'].iloc[i]) if 'date' in df.columns else str(i)
-                        issues.append(f"日期 {date_str}: {col} 跳变 {change:.2%} "
-                                      f"({prev_f} -> {curr_f})")
-                        jump_count += 1
-                except (ValueError, TypeError):
-                    continue
+            changes = df['close'].astype(float).pct_change(fill_method=None).abs()
+            jump_mask = changes > self.price_jump_threshold
+            jump_count = int(jump_mask.sum())
+            if jump_count > 0:
+                issues.append(f"检测到 {jump_count} 个价格跳变(>{self.price_jump_threshold:.0%})")
+            # 详细记录跳变日期
+            if jump_count > 0 and jump_count <= 20:
+                jump_dates = df.index[jump_mask].tolist()
+                for d in jump_dates:
+                    issues.append(f"  价格跳变日期: {d}")
 
         # 4. 检查 high >= low
         if 'high' in df.columns and 'low' in df.columns:

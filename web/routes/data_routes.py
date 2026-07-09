@@ -9,8 +9,15 @@ router = APIRouter()
 
 
 def _get_downloader(request: Request) -> Downloader:
-    provider = DataProvider()
-    provider.connect()
+    """P2 优化：复用 app.state 中的 provider，避免每次请求新建 xtquant 连接"""
+    # 优先复用 app.state 中的 provider（如果存在）
+    provider = getattr(request.app.state, 'provider', None)
+    if provider is None:
+        provider = DataProvider()
+        provider.connect()
+        request.app.state.provider = provider
+    elif not provider._connected:
+        provider.connect()
     return Downloader(provider, request.app.state.database)
 
 
