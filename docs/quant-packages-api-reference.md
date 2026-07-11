@@ -1,5 +1,7 @@
 # QuantKing 量化包官方 API 参考手册
 
+> 文档定位：第三方库的历史/集成速查。V3 不再将 XTQuant 视为唯一数据源，也不以自动下单为默认产品能力；具体的目标数据与研究设计以 `DATA_ARCHITECTURE.md`、`RESEARCH_WORKFLOW.md` 为准。
+
 > 本文档汇总 xtquant、qlib、backtrader 三个核心包的官方 API 用法，所有签名均经官方文档/源码核实。
 > 最后更新: 2026-07-08
 > 配套 Skill: `.trae/skills/quant-api-guide/SKILL.md`（精简速查版）
